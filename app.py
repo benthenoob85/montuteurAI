@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur Finance Optimisé", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur IA Cascade", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -23,6 +23,7 @@ st.markdown("""
     .badge-flash {background-color: #28a745;} /* Vert */
     .badge-pro {background-color: #007bff;}   /* Bleu */
     .badge-groq {background-color: #dc3545;}  /* Rouge */
+    .badge-secours {background-color: #ffc107; color: black;} /* Jaune */
 </style>
 """, unsafe_allow_html=True)
 
@@ -49,7 +50,7 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # On utilise le 2.0 Flash qui est solide pour les images
+            # On utilise le 2.0 Flash pour la vision (bon compromis)
             vision_model = genai.GenerativeModel('gemini-2.0-flash')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
@@ -70,92 +71,91 @@ def get_file_content(uploaded_file):
         st.error(f"Erreur lecture {uploaded_file.name}: {e}")
     return text
 
-def select_best_ai(prompt, mode_manuel, has_context=False):
-    """LOGIQUE DE SÉLECTION"""
+def select_initial_strategy(prompt, mode_manuel, has_context=False):
+    """
+    DÉCIDE PAR QUI ON COMMENCE.
+    Mais attention, si celui qu'on choisit échoue, on aura un plan B.
+    """
     
-    # 1. MODE MANUEL
-    if "Flash" in mode_manuel: return "flash", "⚡ Gemini Flash (Base)"
-    if "Pro" in mode_manuel: return "pro", "🧠 Gemini Pro (Expert)"
-    if "Groq" in mode_manuel:
-        if groq_client: return "groq", "🦙 Groq Llama 3 (Raisonnement)"
-        else: return "pro", "⚠️ Pas de clé Groq -> Gemini Pro"
+    # 1. SI L'UTILISATEUR FORCE UN MODE
+    if "Flash" in mode_manuel: return "flash" # On veut du rapide/gratuit
+    if "Pro" in mode_manuel: return "pro"     # On veut de la puissance
+    if "Groq" in mode_manuel: return "groq"   # On veut du raisonnement
 
-    # 2. MODE AUTO
+    # 2. MODE AUTO (INTELLIGENT)
     prompt_lower = prompt.lower()
     
-    # NIVEAU 3 : RAISONNEMENT (Groq)
-    reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "explique moi comme", "rédaction"]
+    # Si c'est du raisonnement pur -> Groq
+    reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction"]
     if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
-        return "groq", "🦙 Groq Llama 3 (Auto)"
+        return "groq"
 
-    # NIVEAU 2 : TECHNIQUE (Gemini Pro)
+    # Si c'est technique/financier -> Gemini Pro (Le plus fort)
     technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
     if has_context or any(t in prompt_lower for t in technical_triggers):
-        return "pro", "🧠 Gemini Pro (Auto)"
+        return "pro"
 
-    # NIVEAU 1 : SIMPLE (Flash)
-    return "flash", "⚡ Gemini Flash (Auto)"
+    # Sinon (Bonjour, définition simple) -> Gemini Flash
+    return "flash"
 
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
-    model_type, label = select_best_ai(prompt, mode_manuel, has_context=has_ctx)
+    strategy = select_initial_strategy(prompt, mode_manuel, has_context=has_ctx)
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
     
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
 
-    try:
-        # --- NIVEAU 3 : GROQ ---
-        if model_type == "groq":
+    # --- STRATÉGIE GROQ ---
+    if strategy == "groq" and groq_client:
+        try:
             chat_completion = groq_client.chat.completions.create(
                 messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}],
                 model="llama-3.3-70b-versatile", temperature=0,
             )
-            return chat_completion.choices[0].message.content, label
+            return chat_completion.choices[0].message.content, "🦙 Groq Llama 3"
+        except:
+            # Si Groq plante, on tombe sur la cascade Google
+            pass 
 
-        # --- NIVEAU 2 : GEMINI PRO ---
-        elif model_type == "pro":
-            try:
-                # On tente le 2.5 Pro (le meilleur). S'il plante (quota 20), on bascule sur Flash
-                model = genai.GenerativeModel('gemini-2.5-pro')
-                response = model.generate_content(system_instruction + "\n\n" + full_prompt)
-                return response.text, label
-            except:
-                return ask_google_flash(full_prompt, system_instruction, "⚡ Flash (Secours Pro)")
-
-        # --- NIVEAU 1 : GEMINI FLASH ---
-        else:
-            return ask_google_flash(full_prompt, system_instruction, label)
-
-    except Exception as e:
-        return f"Erreur technique : {e}", "❌ Erreur"
-
-def ask_google_flash(prompt, sys_instruct, label):
-    """
-    Fonction de secours ROBUSTE.
-    On évite absolument les versions '2.5' qui sont limitées à 20 requêtes.
-    On priorise '2.0-flash' et '1.5-flash' qui sont les vrais modèles illimités.
-    """
-    models_to_try = [
-        'gemini-2.0-flash',       # Excellent, rapide, quota large
-        'gemini-1.5-flash',       # Le standard inépuisable
-        'gemini-2.0-flash-lite',  # Version légère très rapide
-        'gemini-flash-latest'     # Générique
-    ]
+    # --- STRATÉGIE GOOGLE CASCADE (Le coeur du système) ---
     
+    # Liste de priorité selon la stratégie choisie
+    if strategy == "pro":
+        # Si on veut du PRO, on tente le 2.5 Pro en premier
+        # S'il échoue, on tentera le 2.0 Flash, puis le 1.5 Flash
+        cascade_list = ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash']
+    else:
+        # Si on veut du FLASH (ou si Groq a planté), on commence direct par le 2.0
+        cascade_list = ['gemini-2.0-flash', 'gemini-1.5-flash']
+
+    # EXÉCUTION DE LA CASCADE
     last_error = ""
-    for model_name in models_to_try:
+    for model_name in cascade_list:
         try:
+            # On tente le modèle
             model = genai.GenerativeModel(model_name)
-            # On colle l'instruction système dans le prompt pour éviter les erreurs de format
-            combined_prompt = sys_instruct + "\n\n" + prompt
+            # On fusionne l'instruction pour maximiser la compatibilité
+            combined_prompt = system_instruction + "\n\n" + full_prompt
             response = model.generate_content(combined_prompt)
-            return response.text, label # On garde le label d'origine (ex: "Flash Auto")
+            
+            # SI ON EST LÀ, C'EST QUE ÇA A MARCHÉ !
+            
+            # On met un joli label
+            if "2.5-pro" in model_name: label = "🧠 Gemini 2.5 Pro (Expert)"
+            elif "2.0-flash" in model_name: label = "⚡ Gemini 2.0 Flash (Rapide)"
+            else: label = "🛡️ Gemini 1.5 Flash (Secours)"
+            
+            return response.text, label
+
         except Exception as e:
+            # AÏE, ERREUR (Quota, Panne...)
             last_error = e
+            # On ne fait rien, la boucle 'for' va automatiquement passer au modèle suivant de la liste !
             continue
             
-    return f"Tous les modèles Flash sont KO (Dernière erreur: {last_error})", "❌ Panne Totale"
+    # Si on sort de la boucle, c'est que TOUT a échoué
+    return f"Panne totale des IA. Dernière erreur : {last_error}", "❌ Erreur"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
@@ -229,9 +229,11 @@ with tab1:
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
                 used_model = msg.get("model_label", "IA")
-                if "Flash" in used_model: badge_class = "badge-flash"
+                if "Pro" in used_model: badge_class = "badge-pro"
+                elif "Flash" in used_model: badge_class = "badge-flash"
                 elif "Groq" in used_model: badge_class = "badge-groq"
-                else: badge_class = "badge-pro"
+                else: badge_class = "badge-secours"
+                
                 st.markdown(f'<span class="badge {badge_class}">{used_model}</span>', unsafe_allow_html=True)
                 docx = create_word_docx(msg["content"], title=f"Réponse {i}")
                 st.download_button("💾 Word", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
@@ -247,9 +249,10 @@ with tab1:
                 st.markdown(resp)
                 st.session_state.messages.append({"role": "assistant", "content": resp, "model_label": model_label})
                 
-                if "Flash" in model_label: badge_class = "badge-flash"
+                if "Pro" in model_label: badge_class = "badge-pro"
+                elif "Flash" in model_label: badge_class = "badge-flash"
                 elif "Groq" in model_label: badge_class = "badge-groq"
-                else: badge_class = "badge-pro"
+                else: badge_class = "badge-secours"
                 st.markdown(f'<span class="badge {badge_class}">{model_label}</span>', unsafe_allow_html=True)
                 
                 docx = create_word_docx(resp, title="Réponse Instantanée")
