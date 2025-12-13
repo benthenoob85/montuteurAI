@@ -29,7 +29,7 @@ st.markdown("""
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
     # On reste sur le modèle Flash
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-pro')
 except Exception as e:
     # C'est ici qu'on demande à voir la vraie erreur
     st.error(f"ERREUR TECHNIQUE DÉTAILLÉE : {e}")
