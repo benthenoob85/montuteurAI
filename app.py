@@ -1,27 +1,20 @@
 import streamlit as st
 import google.generativeai as genai
 from pypdf import PdfReader
+import pandas as pd
+from pptx import Presentation
+from docx import Document
+from PIL import Image
+import io
 
-# --- 1. CONFIGURATION DE LA PAGE ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Mon Tuteur IA", layout="wide", page_icon="🎓")
 
-# CSS Personnalisé
 st.markdown("""
 <style>
-    .stButton>button {
-        border-radius: 20px;
-        background-color: #F8F9FA;
-        border: 1px solid #E0E0E0;
-    }
-    .stButton>button:hover {
-        border-color: #6C5CE7;
-        color: #6C5CE7;
-    }
-    .stChatMessage {
-        background-color: #FFFFFF;
-        border-radius: 15px;
-        box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
+    .stButton>button {border-radius: 20px; background-color: #F8F9FA; border: 1px solid #E0E0E0;}
+    .stButton>button:hover {border-color: #6C5CE7; color: #6C5CE7;}
+    .stChatMessage {background-color: #FFFFFF; border-radius: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);}
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,26 +22,59 @@ st.markdown("""
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+        model = genai.GenerativeModel('gemini-2.5-flash')
     else:
-        st.error("Clé API manquante dans les secrets.")
+        st.error("Clé API manquante.")
         st.stop()
-    
-    # Modèle validé ensemble (Rapide et Gratuit)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-
 except Exception as e:
-    st.error(f"Erreur de connexion : {e}")
+    st.error(f"Erreur connexion : {e}")
 
-# --- 3. FONCTIONS UTILITAIRES ---
-def extract_text_from_pdf(uploaded_files):
+# --- 3. MOTEUR D'EXTRACTION UNIVERSEL ---
+def get_file_content(uploaded_file):
+    """Fonction qui transforme n'importe quel fichier en texte"""
     text = ""
-    for pdf in uploaded_files:
-        try:
-            pdf_reader = PdfReader(pdf)
+    file_type = uploaded_file.name.split('.')[-1].lower()
+    
+    try:
+        # CAS 1 : PDF
+        if file_type == 'pdf':
+            pdf_reader = PdfReader(uploaded_file)
             for page in pdf_reader.pages:
                 text += page.extract_text() or ""
-        except:
-            st.warning(f"Impossible de lire {pdf.name}")
+        
+        # CAS 2 : EXCEL (On lit toutes les feuilles)
+        elif file_type in ['xlsx', 'xls']:
+            xls = pd.ExcelFile(uploaded_file)
+            for sheet_name in xls.sheet_names:
+                df = pd.read_excel(xls, sheet_name=sheet_name)
+                text += f"\n--- Feuille Excel : {sheet_name} ---\n"
+                text += df.to_string() # Convertit le tableau en texte
+                
+        # CAS 3 : POWERPOINT
+        elif file_type == 'pptx':
+            prs = Presentation(uploaded_file)
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        text += shape.text + "\n"
+                        
+        # CAS 4 : WORD
+        elif file_type == 'docx':
+            doc = Document(uploaded_file)
+            for para in doc.paragraphs:
+                text += para.text + "\n"
+                
+        # CAS 5 : IMAGES & NOTES MANUSCRITES (La Magie !)
+        elif file_type in ['png', 'jpg', 'jpeg']:
+            image = Image.open(uploaded_file)
+            # On demande à l'IA de transcrire l'image tout de suite
+            response = model.generate_content(["Transcris intégralement et précisément tout le texte visible sur cette image (notes manuscrites ou tableau).", image])
+            text += f"\n--- Transcription Image ({uploaded_file.name}) ---\n"
+            text += response.text
+
+    except Exception as e:
+        st.error(f"Erreur de lecture sur {uploaded_file.name}: {e}")
+        
     return text
 
 def ask_gemini(prompt):
@@ -56,121 +82,94 @@ def ask_gemini(prompt):
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Erreur de l'IA : {e}"
+        return f"Erreur IA : {e}"
 
-# --- 4. SIDEBAR (LE CARTABLE) ---
+# --- 4. SIDEBAR ---
 with st.sidebar:
-    st.header("🎒 Mon Cartable")
-    matiere = st.selectbox("Matière", ["Finance", "Stats", "Droit", "Biologie", "Autre"])
-    
+    st.header("🎒 Mon Cartable Polyvalent")
+    matiere = st.selectbox("Matière", ["Finance", "Stats", "Droit", "Comptabilité", "Autre"])
     st.divider()
-    st.caption("Documents du cours")
-    uploaded_files = st.file_uploader("Déposez vos PDF ici", accept_multiple_files=True, type=['pdf'])
+    
+    # Upload universel
+    st.caption("Chargez vos cours (Tout format)")
+    uploaded_files = st.file_uploader(
+        "PDF, Excel, Word, PPT, Images...", 
+        accept_multiple_files=True, 
+        type=['pdf', 'xlsx', 'xls', 'pptx', 'docx', 'png', 'jpg', 'jpeg']
+    )
     
     if uploaded_files:
-        if st.button("🔄 Analyser les documents", type="primary"):
-            with st.spinner("Lecture en cours avec Gemini 2.5..."):
-                raw_text = extract_text_from_pdf(uploaded_files)
-                if raw_text:
+        if st.button("🔄 Analyser les fichiers", type="primary"):
+            with st.spinner("Lecture et analyse (OCR pour les images)..."):
+                raw_text = ""
+                for file in uploaded_files:
+                    content = get_file_content(file)
+                    raw_text += f"\n\n--- DOCUMENT : {file.name} ---\n{content}"
+                
+                if len(raw_text) > 20:
                     st.session_state['context'] = raw_text
-                    st.success("✅ Documents mémorisés !")
+                    st.success(f"✅ {len(uploaded_files)} documents intégrés en mémoire !")
                 else:
-                    st.warning("Je n'ai trouvé aucun texte lisible.")
-    
+                    st.warning("Aucun texte exploitable trouvé.")
+
     if 'context' in st.session_state:
         st.info("🧠 Mémoire active")
     else:
-        st.warning("⚠️ Aucun cours en mémoire")
+        st.warning("⚠️ Aucun document chargé")
 
-# --- 5. ZONE PRINCIPALE ---
+# --- 5. INTERFACE PRINCIPALE ---
 st.title(f"Tutorat : {matiere}")
+tab_chat, tab_outils, tab_quiz = st.tabs(["💬 Discussion", "📝 Synthèses", "🧠 Quiz"])
 
-tab_chat, tab_outils, tab_quiz = st.tabs(["💬 Discussion", "📝 Synthèses & Outils", "🧠 Quiz & Entraînement"])
-
-# === ONGLET 1 : CHAT ===
+# CHAT
 with tab_chat:
     if "messages" not in st.session_state:
         st.session_state.messages = []
-
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
-
-    if user_input := st.chat_input("Posez une question sur le cours..."):
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
             
+    if user_input := st.chat_input("Une question sur vos documents ?"):
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"): st.markdown(user_input)
+        
         context = st.session_state.get('context', '')
-        full_prompt = f"""
-        Agis comme un tuteur expert et pédagogue.
-        CONTEXTE : {context}
-        QUESTION : {user_input}
-        Réponds de manière claire et structurée.
-        """
+        full_prompt = f"Tu es un tuteur expert. Contexte du cours : {context}. Question : {user_input}"
         
         with st.chat_message("assistant"):
             with st.spinner("Réflexion..."):
-                response = ask_gemini(full_prompt)
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                resp = ask_gemini(full_prompt)
+                st.markdown(resp)
+                st.session_state.messages.append({"role": "assistant", "content": resp})
 
-# === ONGLET 2 : SYNTHÈSES ===
+# OUTILS (Code identique mais connecté au nouveau contexte)
 with tab_outils:
-    st.subheader("Outils d'étude")
     col1, col2 = st.columns(2)
-    
-    # Outil Résumé
     with col1:
-        with st.container(border=True):
-            st.write("### 📄 Synthèse de cours")
-            if st.button("Générer le résumé"):
-                if 'context' in st.session_state:
-                    with st.spinner("Rédaction..."):
-                        prompt_resume = f"Fais une synthèse structurée de ce texte : {st.session_state['context']}"
-                        resume = ask_gemini(prompt_resume)
-                        st.markdown(resume)
-                else:
-                    st.error("Chargez un document d'abord.")
-
-    # Outil Flashcards (Correction de l'erreur ici)
-    with col2:
-        with st.container(border=True):
-            st.write("### 📇 Flashcards")
-            st.caption("Cliquez sur une question pour voir la réponse.")
+        st.write("### 📄 Synthèse")
+        if st.button("Résumer le contenu"):
+            if 'context' in st.session_state:
+                with st.spinner("Rédaction..."):
+                    st.markdown(ask_gemini(f"Fais une synthèse structurée de : {st.session_state['context']}"))
+            else: st.error("Chargez des documents.")
             
-            if st.button("Générer 5 cartes"):
-                if 'context' in st.session_state:
-                    with st.spinner("Création des cartes..."):
-                        prompt_flash = (
-                            f"Extrait 5 concepts clés de ce cours : {st.session_state['context']}. "
-                            "Format impératif : sur chaque ligne, écris 'QUESTION ; RÉPONSE' "
-                            "(utilise un point-virgule pour séparer). Pas de gras, pas de liste."
-                        )
-                        cards_text = ask_gemini(prompt_flash)
-                        
-                        # Logique d'affichage déroulant
-                        for line in cards_text.split('\n'):
-                            if ";" in line:
-                                try:
-                                    parts = line.split(";", 1)
-                                    q = parts[0].strip()
-                                    r = parts[1].strip()
-                                    with st.expander(f"❓ {q}"):
-                                        st.write(f"💡 {r}")
-                                except:
-                                    continue
-                else:
-                    st.error("Chargez un document d'abord.")
+    with col2:
+        st.write("### 📇 Flashcards")
+        if st.button("Créer des cartes"):
+            if 'context' in st.session_state:
+                with st.spinner("Génération..."):
+                    prompt = f"5 Flashcards (Question ; Réponse) sur : {st.session_state['context']}. Format 'Q ; R' par ligne."
+                    res = ask_gemini(prompt)
+                    for line in res.split('\n'):
+                        if ";" in line:
+                            p = line.split(";", 1)
+                            with st.expander(f"❓ {p[0]}"): st.write(f"💡 {p[1]}")
+            else: st.error("Chargez des documents.")
 
-# === ONGLET 3 : QUIZ ===
+# QUIZ
 with tab_quiz:
-    st.subheader("Testez vos connaissances")
-    if st.button("Lancer un Quiz (3 questions)"):
-         if 'context' in st.session_state:
-            with st.spinner("Génération du quiz..."):
-                prompt_quiz = f"Génère un quiz QCM de 3 questions sur : {st.session_state['context']}. Correction à la fin."
-                quiz = ask_gemini(prompt_quiz)
-                st.markdown(quiz)
-         else:
-            st.error("Chargez un document d'abord.")
+    if st.button("Lancer un Quiz"):
+        if 'context' in st.session_state:
+            with st.spinner("Génération..."):
+                st.markdown(ask_gemini(f"Quiz QCM de 3 questions sur : {st.session_state['context']}. Correction à la fin."))
+        else: st.error("Chargez des documents.")
