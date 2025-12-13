@@ -4,26 +4,19 @@ from pypdf import PdfReader
 import pandas as pd
 from pptx import Presentation
 from docx import Document
+from docx.shared import Inches
 from PIL import Image
 import io
+import matplotlib.pyplot as plt
+import re
 
-# --- 1. CONFIGURATION VISUELLE ---
+# --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Tuteur IA Finance", layout="wide", page_icon="🎓")
 
-# CSS pour le chat et les formules
 st.markdown("""
 <style>
-    .stChatMessage {
-        background-color: #f0f2f6;
-        border-radius: 10px;
-        padding: 10px;
-        margin-bottom: 10px;
-    }
-    .stDownloadButton > button {
-        height: 30px;
-        padding-top: 0px;
-        padding-bottom: 0px;
-    }
+    .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px; margin-bottom: 10px;}
+    .stDownloadButton > button {height: 30px; padding: 0px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,49 +59,83 @@ def get_file_content(uploaded_file):
 
 def ask_gemini(prompt):
     try:
-        # RETOUR DU LATEX : On demande explicitement le format mathématique pro
+        # On demande du LaTeX strict pour pouvoir le détecter et le transformer en image
         system_instruction = (
-            "Tu es un tuteur expert en Finance et Statistiques. "
-            "RÈGLE D'AFFICHAGE : Utilise le format LaTeX pour TOUTES les formules mathématiques, même simples. "
-            "Encadre les équations par des dollars doubles ($$) pour qu'elles soient centrées et bien lisibles. "
-            "Exemple : $$ E = mc^2 $$."
+            "Tu es un expert Finance. "
+            "RÈGLE OBLIGATOIRE : Pour toute formule mathématique, utilise le format LaTeX encadré par des DOLLARS DOUBLES ($$). "
+            "Ne mets jamais de formule dans le texte courant, isole-les toujours sur une nouvelle ligne avec $$."
+            "Exemple : \n$$ \sigma = \sqrt{variance} $$\n"
         )
         response = model.generate_content(system_instruction + "\n\n" + prompt)
         return response.text
     except Exception as e: return f"Erreur IA : {e}"
 
-def create_word_docx(text_content, title="Note de Cours"):
+def latex_to_image(latex_str):
+    """Transforme une formule LaTeX en image PNG transparente"""
+    try:
+        # Configuration d'une petite figure matplotlib
+        fig, ax = plt.subplots(figsize=(6, 1)) # Taille rectangle
+        # On dessine la formule
+        ax.text(0.5, 0.5, f"${latex_str}$", size=18, ha='center', va='center')
+        ax.axis('off') # On cache les axes
+        
+        # Sauvegarde en mémoire
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, transparent=True)
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except:
+        return None
+
+def create_word_docx(text_content, title="Document IA"):
+    """Génère un Word en remplaçant les $$...$$ par des images"""
     doc = Document()
     doc.add_heading(title, 0)
-    doc.add_paragraph(text_content)
+    
+    # On découpe le texte par blocs de formules $$
+    # Le regex capture ce qui est entre $$
+    parts = re.split(r'(\$\$.*?\$\$)', text_content, flags=re.DOTALL)
+    
+    for part in parts:
+        if part.startswith('$$') and part.endswith('$$'):
+            # C'est une formule ! On nettoie les $$
+            latex_code = part.replace('$$', '').strip()
+            image_buffer = latex_to_image(latex_code)
+            
+            if image_buffer:
+                # On ajoute l'image centrée
+                doc.add_picture(image_buffer, width=Inches(2))
+            else:
+                # Si l'image plante, on met le code en secours
+                doc.add_paragraph(part)
+        else:
+            # C'est du texte normal
+            if part.strip(): # On évite les lignes vides inutiles
+                doc.add_paragraph(part.strip())
+                
     bio = io.BytesIO()
     doc.save(bio)
     return bio
 
-# --- 4. SIDEBAR ---
+# --- 4. INTERFACE ---
 with st.sidebar:
     st.header("🎒 Cartable")
-    uploaded_files = st.file_uploader("Documents", accept_multiple_files=True)
-    
+    uploaded_files = st.file_uploader("Fichiers", accept_multiple_files=True)
     if uploaded_files:
-        if st.button("🔄 Analyser", type="primary"):
+        if st.button("🔄 Analyser"):
             with st.spinner("Lecture..."):
-                raw_text = ""
-                for file in uploaded_files: raw_text += get_file_content(file)
-                st.session_state['context'] = raw_text
-                st.success("Mémoire à jour !")
-
+                raw = ""
+                for f in uploaded_files: raw += get_file_content(f)
+                st.session_state['context'] = raw
+                st.success("Chargé !")
     st.divider()
-    if 'context' in st.session_state:
-        st.info("🧠 Cerveau chargé")
-    else: st.warning("⚠️ Cerveau vide")
+    if 'context' in st.session_state: st.info("Mémoire active")
 
-# --- 5. INTERFACE ---
-st.subheader("🎓 Tuteur Privé")
+# --- 5. ZONES ---
+st.subheader("🎓 Tuteur Finance")
+tab1, tab2, tab3 = st.tabs(["💬 Chat", "📝 Synthèses", "🧠 Quiz"])
 
-tab1, tab2, tab3 = st.tabs(["💬 Discussion", "📝 Synthèses", "🧠 Quiz"])
-
-# === CHAT ===
 with tab1:
     if "messages" not in st.session_state: st.session_state.messages = []
     
@@ -116,42 +143,38 @@ with tab1:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
-                docx = create_word_docx(msg["content"], title=f"Réponse IA - {i}")
-                st.download_button("💾 Word", docx.getvalue(), f"note_{i}.docx", key=f"btn_{i}")
+                # Bouton de téléchargement avec conversion d'images
+                docx = create_word_docx(msg["content"], title=f"Réponse {i}")
+                st.download_button("💾 Word (Avec Images)", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
 
-    if user_input := st.chat_input("Question (ex: Formule de Black-Scholes)..."):
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        with st.chat_message("user"): st.markdown(user_input)
+    if user := st.chat_input("Question (ex: Formule Écart-Type)..."):
+        st.session_state.messages.append({"role": "user", "content": user})
+        with st.chat_message("user"): st.markdown(user)
         
-        context = st.session_state.get('context', '')
-        full_prompt = f"Contexte : {context}. Question : {user_input}."
-        
+        ctx = st.session_state.get('context', '')
         with st.chat_message("assistant"):
             with st.spinner("Calcul..."):
-                resp = ask_gemini(full_prompt)
-                st.markdown(resp) # Streamlit va rendre le LaTeX magnifique ici
+                resp = ask_gemini(f"Contexte: {ctx}. Question: {user}")
+                st.markdown(resp)
                 st.session_state.messages.append({"role": "assistant", "content": resp})
                 
                 docx = create_word_docx(resp, title="Réponse Instantanée")
-                st.download_button("💾 Télécharger en Word", docx.getvalue(), "reponse.docx", key="btn_last")
+                st.download_button("💾 Télécharger (Format Image)", docx.getvalue(), "reponse.docx", key="new")
 
-# === SYNTHÈSE ===
 with tab2:
     if st.button("Générer Synthèse"):
         if 'context' in st.session_state:
             with st.spinner("Rédaction..."):
-                # On précise bien de garder le LaTeX pour la synthèse aussi
-                res = ask_gemini(f"Fais une fiche de révision sur : {st.session_state['context']}. Garde les formules en LaTeX ($$).")
+                res = ask_gemini(f"Synthèse structurée sur : {st.session_state['context']}")
                 st.markdown(res)
-                docx = create_word_docx(res, title="Synthèse")
+                docx = create_word_docx(res, title="Synthèse Complète")
                 st.download_button("📥 Télécharger", docx.getvalue(), "synthese.docx")
         else: st.error("Pas de documents.")
 
-# === QUIZ ===
 with tab3:
     if st.button("Lancer Quiz"):
         if 'context' in st.session_state:
-            res = ask_gemini(f"3 QCM sur : {st.session_state['context']}.")
+            res = ask_gemini(f"3 QCM sur : {st.session_state['context']}")
             st.markdown(res)
             docx = create_word_docx(res, title="Quiz")
             st.download_button("📥 Télécharger", docx.getvalue(), "quiz.docx")
