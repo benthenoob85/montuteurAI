@@ -14,7 +14,7 @@ import re
 import time
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur Finance Stable", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur IA Compatible", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -51,7 +51,7 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # On utilise l'alias générique "latest" pour la vision aussi
+            # Vision : On utilise l'alias "latest" qui est toujours valide
             vision_model = genai.GenerativeModel('gemini-flash-latest')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
@@ -82,15 +82,20 @@ def select_initial_strategy(prompt, mode_manuel, has_context=False):
 
     # MODE AUTO
     prompt_lower = prompt.lower()
+    
+    # 1. Raisonnement -> Groq
     reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction"]
     if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
         return "groq"
 
+    # 2. Technique -> Gemini Pro (Le plus fort de Google)
     technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
     if has_context or any(t in prompt_lower for t in technical_triggers):
         return "pro"
 
+    # 3. Standard -> Flash
     return "flash"
+
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
@@ -99,7 +104,7 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
     
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
 
-    # --- STRATÉGIE GROQ (Si dispo) ---
+    # --- STRATÉGIE 1 : GROQ (Si demandé et dispo) ---
     if strategy == "groq" and groq_client:
         try:
             chat_completion = groq_client.chat.completions.create(
@@ -108,46 +113,43 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             )
             return chat_completion.choices[0].message.content, "🦙 Groq Llama 3"
         except:
-            pass # On bascule sur Google si Groq plante
+            pass # Si Groq plante, on continue vers Google
 
-    # --- STRATÉGIE GOOGLE CASCADE ---
+    # --- STRATÉGIE 2 : GOOGLE CASCADE (CORRIGÉE) ---
     
-    # Construction de la liste des modèles à essayer dans l'ordre
+    # On construit une liste de modèles qui EXISTENT VRAIMENT sur votre compte
     cascade_list = []
-    
-    if strategy == "pro":
-        # On tente le Pro Latest (Générique) -> Puis le Flash Latest
-        cascade_list = ['gemini-pro-latest', 'gemini-flash-latest']
-    else:
-        # On tente le Flash Latest (Générique)
-        cascade_list = ['gemini-flash-latest']
 
-    # On ajoute toujours une sécurité à la fin de la liste avec des versions 1.5 explicites
-    # au cas où les alias "latest" pointeraient vers des versions 2.0 limitées
-    cascade_list.append('gemini-1.5-flash') 
+    if strategy == "pro":
+        # Tentative : 1. Le Pro 2.5 (Limité) -> 2. Le Flash Latest (Stable) -> 3. Le Flash 2.0 (Backup)
+        cascade_list = ['gemini-2.5-pro', 'gemini-flash-latest', 'gemini-2.0-flash']
+    else:
+        # Tentative : 1. Le Flash Latest (Stable) -> 2. Le Flash 2.0 (Backup)
+        cascade_list = ['gemini-flash-latest', 'gemini-2.0-flash']
 
     last_error = ""
     
     for model_name in cascade_list:
         try:
             model = genai.GenerativeModel(model_name)
-            # On colle l'instruction système dans le prompt pour robustesse maximale
+            # On combine le prompt pour éviter les erreurs de format sur les modèles récents
             combined_prompt = system_instruction + "\n\n" + full_prompt
             response = model.generate_content(combined_prompt)
             
-            # Label propre
-            if "pro" in model_name: label = "🧠 Gemini Pro (Expert)"
-            elif "flash" in model_name: label = "⚡ Gemini Flash (Rapide)"
+            # Label pour l'interface
+            if "2.5-pro" in model_name: label = "🧠 Gemini 2.5 Pro (Expert)"
+            elif "latest" in model_name: label = "⚡ Gemini Flash (Stable)"
+            elif "2.0" in model_name: label = "🛡️ Gemini 2.0 (Secours)"
             else: label = f"🤖 {model_name}"
             
             return response.text, label
 
         except Exception as e:
             last_error = e
-            # IMPORTANT : Si c'est une erreur de quota (429), on continue la boucle !
+            # Si erreur 429 (quota) ou 404, on passe immédiatement au suivant
             continue
             
-    return f"Toutes les IA dorment. Dernière erreur : {last_error}", "❌ Erreur Totale"
+    return f"Erreur critique : Aucun modèle n'a répondu. (Dernière erreur : {last_error})", "❌ Panne Totale"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
