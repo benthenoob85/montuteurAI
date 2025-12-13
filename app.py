@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Stable", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur IA Finance", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -49,7 +49,6 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # Vision : On utilise le modèle Flash standard qui est multimodal
             vision_model = genai.GenerativeModel('gemini-1.5-flash')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
@@ -73,7 +72,7 @@ def get_file_content(uploaded_file):
 def select_best_ai(prompt, mode_manuel, has_context=False):
     """Sélecteur de modèle (Smart Router)"""
     
-    # 1. MODE MANUEL FORCÉ
+    # 1. MODE MANUEL
     if mode_manuel == "🚲 Éco (Flash)":
         return "gemini-flash", "🚲 Gemini Flash (Forcé)"
     
@@ -126,35 +125,31 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             )
             return chat_completion.choices[0].message.content, label
 
-        # --- CAS 3 : GEMINI PRO (Tracteur/Expert) ---
+        # --- CAS 3 : GEMINI PRO ---
         elif model_type == "gemini-pro":
-            # On force le modèle Pro 1.5 stable
             model = genai.GenerativeModel('gemini-1.5-pro')
             response = model.generate_content(system_instruction + "\n\n" + full_prompt)
             return response.text, label
 
-        # --- CAS 4 : LE VÉLO (CORRECTION ICI) ---
+        # --- CAS 4 : LE VÉLO (CORRECTION MAJEURE) ---
         else:
-            # Liste des noms EXACTS valides en Décembre 2025
-            # On enlève 'gemini-pro' qui causait l'erreur 404
-            safe_models = [
-                'gemini-1.5-flash',       # Le standard actuel
-                'gemini-1.5-flash-latest',# La dernière version
-                'gemini-1.5-flash-001',   # La version stable spécifique
-                'gemini-1.0-pro'          # L'ancien Pro (nom exact)
-            ]
+            # On utilise uniquement la famille 1.5 qui est stable
+            safe_models = ['gemini-1.5-flash', 'gemini-1.5-pro']
             
             last_err = ""
             for m in safe_models:
                 try:
                     model = genai.GenerativeModel(m)
-                    response = model.generate_content(system_instruction + "\n\n" + full_prompt)
-                    return response.text, f"🚲 {m}" # Succès !
+                    # Note : En mode secours, on envoie le prompt directement SANS l'instruction système séparée
+                    # pour éviter les erreurs de format sur certains modèles.
+                    # On inclut l'instruction dans le texte global.
+                    combined_prompt = system_instruction + "\n\n" + full_prompt
+                    response = model.generate_content(combined_prompt)
+                    return response.text, f"🚲 {m}"
                 except Exception as e:
                     last_err = e
                     continue # On essaie le suivant
             
-            # Si tout échoue vraiment
             return f"Erreur Vélo : Impossible de joindre Google ({last_err})", "❌ Panne"
 
     except Exception as e:
