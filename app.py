@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Cascade", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur IA Compatible 2.0", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -50,7 +50,7 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # On utilise le 2.0 Flash pour la vision (bon compromis)
+            # CORRECTION ICI : On utilise le 2.0 Flash car le 1.5 n'existe pas chez vous
             vision_model = genai.GenerativeModel('gemini-2.0-flash')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
@@ -74,28 +74,26 @@ def get_file_content(uploaded_file):
 def select_initial_strategy(prompt, mode_manuel, has_context=False):
     """
     DÉCIDE PAR QUI ON COMMENCE.
-    Mais attention, si celui qu'on choisit échoue, on aura un plan B.
     """
-    
     # 1. SI L'UTILISATEUR FORCE UN MODE
-    if "Flash" in mode_manuel: return "flash" # On veut du rapide/gratuit
-    if "Pro" in mode_manuel: return "pro"     # On veut de la puissance
-    if "Groq" in mode_manuel: return "groq"   # On veut du raisonnement
+    if "Flash" in mode_manuel: return "flash"
+    if "Pro" in mode_manuel: return "pro"
+    if "Groq" in mode_manuel: return "groq"
 
-    # 2. MODE AUTO (INTELLIGENT)
+    # 2. MODE AUTO
     prompt_lower = prompt.lower()
     
-    # Si c'est du raisonnement pur -> Groq
+    # Raisonnement -> Groq
     reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction"]
     if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
         return "groq"
 
-    # Si c'est technique/financier -> Gemini Pro (Le plus fort)
+    # Technique -> Gemini Pro (Le plus fort)
     technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
     if has_context or any(t in prompt_lower for t in technical_triggers):
         return "pro"
 
-    # Sinon (Bonjour, définition simple) -> Gemini Flash
+    # Sinon -> Gemini Flash
     return "flash"
 
 
@@ -106,7 +104,7 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
     
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
 
-    # --- STRATÉGIE GROQ ---
+    # --- STRATÉGIE GROQ (Si dispo) ---
     if strategy == "groq" and groq_client:
         try:
             chat_completion = groq_client.chat.completions.create(
@@ -115,47 +113,38 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             )
             return chat_completion.choices[0].message.content, "🦙 Groq Llama 3"
         except:
-            # Si Groq plante, on tombe sur la cascade Google
-            pass 
+            pass # On bascule sur Google si Groq plante
 
-    # --- STRATÉGIE GOOGLE CASCADE (Le coeur du système) ---
+    # --- STRATÉGIE GOOGLE CASCADE (CORRIGÉE POUR VOS MODÈLES) ---
     
-    # Liste de priorité selon la stratégie choisie
     if strategy == "pro":
-        # Si on veut du PRO, on tente le 2.5 Pro en premier
-        # S'il échoue, on tentera le 2.0 Flash, puis le 1.5 Flash
-        cascade_list = ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-flash']
+        # On tente le 2.5 Pro (limité à 20), puis on tombe sur le 2.0 Flash (illimité)
+        cascade_list = ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-2.0-flash-lite']
     else:
-        # Si on veut du FLASH (ou si Groq a planté), on commence direct par le 2.0
-        cascade_list = ['gemini-2.0-flash', 'gemini-1.5-flash']
+        # On commence direct par le 2.0 Flash
+        cascade_list = ['gemini-2.0-flash', 'gemini-2.0-flash-lite']
 
-    # EXÉCUTION DE LA CASCADE
     last_error = ""
+    
     for model_name in cascade_list:
         try:
-            # On tente le modèle
             model = genai.GenerativeModel(model_name)
-            # On fusionne l'instruction pour maximiser la compatibilité
             combined_prompt = system_instruction + "\n\n" + full_prompt
             response = model.generate_content(combined_prompt)
             
-            # SI ON EST LÀ, C'EST QUE ÇA A MARCHÉ !
-            
-            # On met un joli label
+            # Label propre pour l'affichage
             if "2.5-pro" in model_name: label = "🧠 Gemini 2.5 Pro (Expert)"
             elif "2.0-flash" in model_name: label = "⚡ Gemini 2.0 Flash (Rapide)"
-            else: label = "🛡️ Gemini 1.5 Flash (Secours)"
+            elif "lite" in model_name: label = "🛡️ Gemini Lite (Secours)"
+            else: label = f"🤖 {model_name}"
             
             return response.text, label
 
         except Exception as e:
-            # AÏE, ERREUR (Quota, Panne...)
             last_error = e
-            # On ne fait rien, la boucle 'for' va automatiquement passer au modèle suivant de la liste !
-            continue
+            continue # On passe au suivant
             
-    # Si on sort de la boucle, c'est que TOUT a échoué
-    return f"Panne totale des IA. Dernière erreur : {last_error}", "❌ Erreur"
+    return f"Panne totale. Vérifiez votre clé ou attendez un peu. (Erreur: {last_error})", "❌ Erreur"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
