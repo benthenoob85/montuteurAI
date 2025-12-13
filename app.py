@@ -119,28 +119,43 @@ with tab2:
     col1, col2 = st.columns(2)
     with col1:
         st.write("### 📄 Générateur de Fiches")
+        st.caption("Génère un résumé lisible pour Word (sans code bizarre).")
+        
         if st.button("Générer une synthèse"):
             if 'context' in st.session_state:
-                with st.spinner("Rédaction..."):
-                    res = ask_gemini(f"Fais une fiche de révision structurée sur : {st.session_state['context']}")
-                    st.markdown(res)
-                    st.session_state['last_summary'] = res # On sauvegarde pour le bouton téléchargement
-            else: st.error("Pas de cours.")
+                with st.spinner("Rédaction optimisée pour Word..."):
+                    # LE SECRET EST ICI : On change les instructions pour l'IA
+                    prompt_export = (
+                        f"Agis comme un expert en finance. Fais une fiche de révision structurée sur ce contenu : {st.session_state['context']}. "
+                        "IMPORTANT POUR LA MISE EN PAGE :"
+                        "1. N'utilise JAMAIS de code LaTeX (pas de $$ ou de \). "
+                        "2. Utilise les vrais symboles typographiques pour les maths : utilise 'σ' au lieu de \sigma, 'β' au lieu de \beta, '²' pour le carré, '∑' pour somme. "
+                        "3. Écris les fractions sur une seule ligne (ex: a/b) pour que ce soit lisible dans Word. "
+                        "4. Fais des titres clairs."
+                    )
+                    res = ask_gemini(prompt_export)
+                    st.markdown(res) # Ça s'affichera bien aussi sur l'écran
+                    st.session_state['last_summary'] = res
+            else: st.error("Pas de cours en mémoire.")
 
     with col2:
         st.write("### 💾 Sauvegarde")
         if 'last_summary' in st.session_state:
-            st.success("Une synthèse est prête à être téléchargée !")
-            # Le bouton magique de téléchargement
+            st.success("Synthèse prête !")
+            
+            # On demande un nom de fichier pour le fun
+            nom_fichier = st.text_input("Nom du fichier", "Ma_Synthese_Finance")
+            
             docx_file = create_word_docx(st.session_state['last_summary'])
+            
             st.download_button(
                 label="📥 Télécharger en Word (.docx)",
                 data=docx_file.getvalue(),
-                file_name="ma_synthese_finance.docx",
+                file_name=f"{nom_fichier}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
         else:
-            st.info("Générez d'abord une synthèse à gauche pour pouvoir la télécharger.")
+            st.info("Générez d'abord une synthèse à gauche.")
 
 # QUIZ
 with tab3:
