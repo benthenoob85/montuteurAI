@@ -28,9 +28,11 @@ st.markdown("""
 # --- 2. CONNEXION IA ---
 try:
     genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-except:
-    st.error("⚠️ Erreur de clé API. Vérifiez vos Secrets.")
+    # On reste sur le modèle Flash
+    model = genai.GenerativeModel('gemini-1.5-flash')
+except Exception as e:
+    # C'est ici qu'on demande à voir la vraie erreur
+    st.error(f"ERREUR TECHNIQUE DÉTAILLÉE : {e}")
 
 # --- 3. FONCTIONS UTILITAIRES ---
 def extract_text_from_pdf(uploaded_files):
