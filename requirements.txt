@@ -1,3 +1,8 @@
 streamlit
 google-generativeai>=0.7.0
 pypdf
+pandas
+openpyxl
+python-pptx
+python-docx
+Pillow
