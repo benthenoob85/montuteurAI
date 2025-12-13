@@ -1,7 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
-import anthropic
-from groq import Groq
+from groq import Groq # Optionnel, on le garde en backup au cas où
 from pypdf import PdfReader
 import pandas as pd
 from pptx import Presentation
@@ -14,35 +13,43 @@ import re
 import time
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Compatible", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur Google Dynamique", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
     .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px; margin-bottom: 10px;}
-    .stDownloadButton > button {height: 30px; padding: 0px;}
     .badge {padding: 3px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white;}
-    .badge-flash {background-color: #28a745;} /* Vert */
-    .badge-pro {background-color: #007bff;}   /* Bleu */
-    .badge-groq {background-color: #dc3545;}  /* Rouge */
-    .badge-secours {background-color: #ffc107; color: black;} /* Jaune */
+    .badge-google {background-color: #28a745;} /* Vert */
+    .badge-backup {background-color: #ffc107; color: black;} /* Jaune */
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. CONNEXION AUX IA ---
+# --- 2. CONNEXION ET DÉTECTION DES MODÈLES ---
+valid_google_models = []
+
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+        
+        # --- C'EST ICI QUE LA MAGIE OPÈRE ---
+        # On demande la liste officielle à votre compte pour ne pas avoir de 404
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    # On privilégie les versions stables et "latest"
+                    valid_google_models.append(m.name)
+        except:
+            # Si le listage échoue, on met des valeurs sûres par défaut
+            valid_google_models = ["models/gemini-flash-latest", "models/gemini-pro"]
+            
 except: pass
 
+# Backup Groq (Juste au cas où, mais Google reste prioritaire)
 groq_client = None
 if "GROQ_API_KEY" in st.secrets:
     try: groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     except: pass
 
-claude_client = None
-if "ANTHROPIC_API_KEY" in st.secrets:
-    try: claude_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
-    except: pass
 
 # --- 3. FONCTIONS TECHNIQUES ---
 def get_file_content(uploaded_file):
@@ -51,8 +58,14 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # Vision : On utilise l'alias "latest" qui est toujours valide
-            vision_model = genai.GenerativeModel('gemini-flash-latest')
+            # Vision : On utilise le premier modèle disponible qui n'est pas "lite" (souvent mieux pour l'image)
+            vision_model_name = 'gemini-flash-latest' # Par défaut
+            for m in valid_google_models:
+                if 'flash' in m and 'lite' not in m:
+                    vision_model_name = m
+                    break
+            
+            vision_model = genai.GenerativeModel(vision_model_name)
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
         elif file_type == 'pdf':
@@ -62,94 +75,95 @@ def get_file_content(uploaded_file):
             xls = pd.ExcelFile(uploaded_file)
             for sheet in xls.sheet_names:
                 text += f"\n--- Excel: {sheet} ---\n" + pd.read_excel(xls, sheet_name=sheet).to_string()
-        elif file_type == 'pptx':
-            for slide in Presentation(uploaded_file).slides:
-                for shape in slide.shapes:
-                    if hasattr(shape, "text"): text += shape.text + "\n"
         elif file_type == 'docx':
             for para in Document(uploaded_file).paragraphs: text += para.text + "\n"
     except Exception as e:
         st.error(f"Erreur lecture {uploaded_file.name}: {e}")
     return text
 
-def select_initial_strategy(prompt, mode_manuel, has_context=False):
+def get_optimized_model_list(strategy):
     """
-    DÉCIDE PAR QUI ON COMMENCE.
+    Trie les modèles DISPONIBLES SUR VOTRE COMPTE par ordre de préférence
+    selon la stratégie (Pro vs Flash).
     """
-    if "Flash" in mode_manuel: return "flash"
-    if "Pro" in mode_manuel: return "pro"
-    if "Groq" in mode_manuel: return "groq"
-
-    # MODE AUTO
-    prompt_lower = prompt.lower()
+    prioritized_list = []
     
-    # 1. Raisonnement -> Groq
-    reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction"]
-    if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
-        return "groq"
-
-    # 2. Technique -> Gemini Pro (Le plus fort de Google)
-    technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
-    if has_context or any(t in prompt_lower for t in technical_triggers):
-        return "pro"
-
-    # 3. Standard -> Flash
-    return "flash"
-
+    # On nettoie les noms (enlève 'models/')
+    clean_models = [m.replace('models/', '') for m in valid_google_models]
+    
+    if strategy == "pro":
+        # 1. On cherche les "Pro" récents
+        prioritized_list += [m for m in clean_models if 'pro' in m and '2.5' in m] # Le top
+        prioritized_list += [m for m in clean_models if 'pro' in m and 'latest' in m] # Le standard
+        prioritized_list += [m for m in clean_models if 'pro' in m] # Les autres pros
+        # 2. Si pas de pro, on prend les Flash puissants
+        prioritized_list += [m for m in clean_models if 'flash' in m and '2.0' in m]
+        
+    else: # Strategy Flash
+        # 1. On cherche les "Flash" stables
+        prioritized_list += [m for m in clean_models if 'flash' in m and 'latest' in m]
+        prioritized_list += [m for m in clean_models if 'flash' in m and '2.0' in m]
+        prioritized_list += [m for m in clean_models if 'flash' in m]
+    
+    # On enlève les doublons tout en gardant l'ordre
+    seen = set()
+    final_list = [x for x in prioritized_list if not (x in seen or seen.add(x))]
+    
+    return final_list
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
-    strategy = select_initial_strategy(prompt, mode_manuel, has_context=has_ctx)
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
-    
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
 
-    # --- STRATÉGIE 1 : GROQ (Si demandé et dispo) ---
-    if strategy == "groq" and groq_client:
-        try:
-            chat_completion = groq_client.chat.completions.create(
-                messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}],
-                model="llama-3.3-70b-versatile", temperature=0,
-            )
-            return chat_completion.choices[0].message.content, "🦙 Groq Llama 3"
-        except:
-            pass # Si Groq plante, on continue vers Google
-
-    # --- STRATÉGIE 2 : GOOGLE CASCADE (CORRIGÉE) ---
+    # --- DÉTERMINATION DE LA STRATÉGIE ---
+    strategy = "flash" # Par défaut
     
-    # On construit une liste de modèles qui EXISTENT VRAIMENT sur votre compte
-    cascade_list = []
+    # Mode Manuel
+    if "Pro" in mode_manuel: strategy = "pro"
+    
+    # Mode Auto
+    elif "Auto" in mode_manuel:
+        technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
+        if has_context or any(t in prompt.lower() for t in technical_triggers):
+            strategy = "pro"
 
-    if strategy == "pro":
-        # Tentative : 1. Le Pro 2.5 (Limité) -> 2. Le Flash Latest (Stable) -> 3. Le Flash 2.0 (Backup)
-        cascade_list = ['gemini-2.5-pro', 'gemini-flash-latest', 'gemini-2.0-flash']
-    else:
-        # Tentative : 1. Le Flash Latest (Stable) -> 2. Le Flash 2.0 (Backup)
-        cascade_list = ['gemini-flash-latest', 'gemini-2.0-flash']
+    # --- SÉLECTION DE LA LISTE DE BATAILLE ---
+    # On récupère la liste des modèles QUI EXISTENT VRAIMENT chez vous
+    model_cascade = get_optimized_model_list(strategy)
+    
+    # On ajoute une sécurité générique à la fin
+    model_cascade.append('gemini-flash-latest')
 
     last_error = ""
     
-    for model_name in cascade_list:
+    # --- EXÉCUTION DE LA CASCADE GOOGLE ---
+    for model_name in model_cascade:
         try:
+            # Tentative d'appel Google
             model = genai.GenerativeModel(model_name)
-            # On combine le prompt pour éviter les erreurs de format sur les modèles récents
             combined_prompt = system_instruction + "\n\n" + full_prompt
             response = model.generate_content(combined_prompt)
             
-            # Label pour l'interface
-            if "2.5-pro" in model_name: label = "🧠 Gemini 2.5 Pro (Expert)"
-            elif "latest" in model_name: label = "⚡ Gemini Flash (Stable)"
-            elif "2.0" in model_name: label = "🛡️ Gemini 2.0 (Secours)"
-            else: label = f"🤖 {model_name}"
-            
-            return response.text, label
+            # Succès !
+            return response.text, f"Google {model_name}"
 
         except Exception as e:
             last_error = e
-            # Si erreur 429 (quota) ou 404, on passe immédiatement au suivant
+            # Si erreur 429 (Quota) ou autre, on passe au suivant
             continue
-            
-    return f"Erreur critique : Aucun modèle n'a répondu. (Dernière erreur : {last_error})", "❌ Panne Totale"
+
+    # --- DERNIER RECOURS : GROQ (Si Google est totalement mort) ---
+    if groq_client:
+        try:
+            chat = groq_client.chat.completions.create(
+                messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}],
+                model="llama-3.3-70b-versatile", temperature=0
+            )
+            return chat.choices[0].message.content, "🦙 Groq (Secours Ultime)"
+        except: pass
+
+    return f"Panne totale. Google bloque tous les modèles disponibles. (Erreur: {last_error})", "❌ Erreur"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
@@ -192,14 +206,22 @@ def create_word_docx(text_content, title="Document IA"):
 
 # --- 4. INTERFACE ---
 with st.sidebar:
-    st.header("🎒 Cartable")
+    st.header("🎒 Cartable Google")
     
     st.markdown("### 🎛️ Choix de l'IA")
     mode_choisi = st.radio(
-        "Niveau d'intelligence :",
-        ["🤖 Auto (Recommandé)", "⚡ Flash (Simple/Illimité)", "🧠 Pro (Moyen/Limité)", "🦙 Groq (Raisonnement)"],
+        "Mode :",
+        ["🤖 Auto", "⚡ Flash (Rapide)", "🧠 Pro (Expert)"],
         index=0
     )
+    
+    # Affichage des modèles détectés pour debug
+    with st.expander("🔍 Modèles détectés"):
+        if valid_google_models:
+            for m in valid_google_models: st.write(f"- {m}")
+        else:
+            st.warning("Aucun modèle détecté (Erreur clé ?)")
+
     st.divider()
     
     uploaded_files = st.file_uploader("Fichiers", accept_multiple_files=True)
@@ -223,12 +245,7 @@ with tab1:
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
                 used_model = msg.get("model_label", "IA")
-                if "Pro" in used_model: badge_class = "badge-pro"
-                elif "Flash" in used_model: badge_class = "badge-flash"
-                elif "Groq" in used_model: badge_class = "badge-groq"
-                else: badge_class = "badge-secours"
-                
-                st.markdown(f'<span class="badge {badge_class}">{used_model}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="badge badge-google">{used_model}</span>', unsafe_allow_html=True)
                 docx = create_word_docx(msg["content"], title=f"Réponse {i}")
                 st.download_button("💾 Word", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
 
@@ -237,17 +254,13 @@ with tab1:
         with st.chat_message("user"): st.markdown(user)
         ctx = st.session_state.get('context', '')
         with st.chat_message("assistant"):
-            with st.spinner(f"Réflexion..."):
+            with st.spinner(f"Réflexion (Google)..."):
                 resp, model_label = ask_smart_ai(user, mode_choisi, context=ctx)
                 
                 st.markdown(resp)
                 st.session_state.messages.append({"role": "assistant", "content": resp, "model_label": model_label})
                 
-                if "Pro" in model_label: badge_class = "badge-pro"
-                elif "Flash" in model_label: badge_class = "badge-flash"
-                elif "Groq" in model_label: badge_class = "badge-groq"
-                else: badge_class = "badge-secours"
-                st.markdown(f'<span class="badge {badge_class}">{model_label}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="badge badge-google">{model_label}</span>', unsafe_allow_html=True)
                 
                 docx = create_word_docx(resp, title="Réponse Instantanée")
                 st.download_button("💾 Télécharger", docx.getvalue(), "reponse.docx", key="new")
@@ -258,7 +271,6 @@ with tab2:
             with st.spinner("Rédaction..."):
                 resp, label = ask_smart_ai(f"Synthèse structurée.", mode_choisi, context=st.session_state['context'])
                 st.markdown(resp)
-                st.markdown(f"**{label}**")
                 docx = create_word_docx(resp, title="Synthèse")
                 st.download_button("📥 Télécharger", docx.getvalue(), "synthese.docx")
         else: st.error("Pas de documents.")
@@ -268,7 +280,6 @@ with tab3:
         if 'context' in st.session_state:
             resp, label = ask_smart_ai(f"3 QCM.", mode_choisi, context=st.session_state['context'])
             st.markdown(resp)
-            st.markdown(f"**{label}**")
             docx = create_word_docx(resp, title="Quiz")
             st.download_button("📥 Télécharger", docx.getvalue(), "quiz.docx")
         else: st.error("Pas de documents.")
