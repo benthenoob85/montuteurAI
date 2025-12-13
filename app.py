@@ -13,16 +13,16 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Finance", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur Finance 3 Niveaux", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
     .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px; margin-bottom: 10px;}
     .stDownloadButton > button {height: 30px; padding: 0px;}
     .badge {padding: 3px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white;}
-    .badge-velo {background-color: #28a745;}
-    .badge-ferrari {background-color: #dc3545;}
-    .badge-tracteur {background-color: #007bff;}
+    .badge-flash {background-color: #28a745;} /* Vert */
+    .badge-pro {background-color: #007bff;}   /* Bleu */
+    .badge-groq {background-color: #dc3545;}  /* Rouge */
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,87 +70,70 @@ def get_file_content(uploaded_file):
     return text
 
 def select_best_ai(prompt, mode_manuel, has_context=False):
-    """Sélecteur de modèle (Smart Router)"""
+    """
+    LOGIQUE DE SÉLECTION À 3 NIVEAUX
+    """
     
-    # 1. MODE MANUEL
-    if mode_manuel == "🚲 Éco (Flash)":
-        return "gemini-flash", "🚲 Gemini Flash (Forcé)"
-    
-    if mode_manuel == "🏎️ Expert (Llama/Pro)":
-        if claude_client: return "claude", "🧠 Claude 3.5 (Luxe Forcé)"
-        if groq_client: return "groq", "🏎️ Llama 3 (Ferrari Forcée)"
-        return "gemini-pro", "🚜 Gemini Pro (Expert Forcé)"
+    # --- 1. SI L'UTILISATEUR IMPOSE SON CHOIX ---
+    if "Flash" in mode_manuel: return "flash", "⚡ Gemini Flash (Base)"
+    if "Pro" in mode_manuel: return "pro", "🧠 Gemini Pro (Moyen)"
+    if "Groq" in mode_manuel:
+        if groq_client: return "groq", "🦙 Groq Llama 3 (Raisonnement)"
+        else: return "pro", "⚠️ Pas de clé Groq -> Gemini Pro"
 
-    # 2. MODE AUTO
+    # --- 2. MODE AUTOMATIQUE (L'IA DÉCIDE) ---
     prompt_lower = prompt.lower()
-    complex_triggers = [
-        "calcul", "analyse", "synthèse", "résous", "équation", "bilan", 
-        "ratio", "expliquer", "détaille", "pourquoi", "comparer", "latex", 
-        "formule", "démonstration", "excel", "tableau", "c'est quoi", "définition"
-    ]
     
-    needs_ferrari = False
-    if has_context: needs_ferrari = True
-    elif any(t in prompt_lower for t in complex_triggers): needs_ferrari = True
-    elif len(prompt.split()) > 15: needs_ferrari = True
-        
-    if needs_ferrari:
-        if claude_client: return "claude", "🧠 Claude 3.5 (Luxe Auto)"
-        if groq_client: return "groq", "🏎️ Llama 3 (Ferrari Auto)"
-        return "gemini-pro", "🚜 Gemini Pro (Tracteur Auto)"
-    else:
-        return "gemini-flash", "🚲 Gemini Flash (Vélo Auto)"
+    # NIVEAU 3 : RAISONNEMENT HUMAIN / COMPLEXE (Groq)
+    # Déclencheurs : Pourquoi, avis, comparaison, nuance, démonstration
+    reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "explique moi comme", "rédaction"]
+    if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
+        return "groq", "🦙 Groq Llama 3 (Auto : Raisonnement)"
+
+    # NIVEAU 2 : TÂCHE TECHNIQUE / DOCUMENT (Gemini Pro)
+    # Déclencheurs : Analyse de fichier, calcul précis, synthèse, Excel
+    technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
+    if has_context or any(t in prompt_lower for t in technical_triggers):
+        return "pro", "🧠 Gemini Pro (Auto : Technique)"
+
+    # NIVEAU 1 : SIMPLE / RAPIDE (Gemini Flash)
+    # Tout le reste : Bonjour, définition simple, etc.
+    return "flash", "⚡ Gemini Flash (Auto : Simple)"
+
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
     model_type, label = select_best_ai(prompt, mode_manuel, has_context=has_ctx)
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
     
-    system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX complexes."
+    system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
 
     try:
-        # --- CAS 1 : CLAUDE ---
-        if model_type == "claude":
-            msg = claude_client.messages.create(
-                model="claude-3-5-sonnet-20240620", max_tokens=4000, temperature=0,
-                system=system_instruction, messages=[{"role": "user", "content": full_prompt}]
-            )
-            return msg.content[0].text, label
-
-        # --- CAS 2 : GROQ ---
-        elif model_type == "groq":
+        # --- NIVEAU 3 : GROQ (RAISONNEMENT) ---
+        if model_type == "groq":
             chat_completion = groq_client.chat.completions.create(
                 messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}],
                 model="llama-3.3-70b-versatile", temperature=0,
             )
             return chat_completion.choices[0].message.content, label
 
-        # --- CAS 3 : GEMINI PRO ---
-        elif model_type == "gemini-pro":
-            model = genai.GenerativeModel('gemini-1.5-pro')
+        # --- NIVEAU 2 : GEMINI PRO (TECHNIQUE LIMITÉ) ---
+        elif model_type == "pro":
+            try:
+                model = genai.GenerativeModel('gemini-1.5-pro')
+                response = model.generate_content(system_instruction + "\n\n" + full_prompt)
+                return response.text, label
+            except:
+                # Si le quota Pro est dépassé, on tombe sur Flash
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(system_instruction + "\n\n" + full_prompt)
+                return response.text, "⚡ Gemini Flash (Secours Pro)"
+
+        # --- NIVEAU 1 : GEMINI FLASH (GRATUIT ILLIMITÉ) ---
+        else:
+            model = genai.GenerativeModel('gemini-1.5-flash')
             response = model.generate_content(system_instruction + "\n\n" + full_prompt)
             return response.text, label
-
-        # --- CAS 4 : LE VÉLO (CORRECTION MAJEURE) ---
-        else:
-            # On utilise uniquement la famille 1.5 qui est stable
-            safe_models = ['gemini-1.5-flash', 'gemini-1.5-pro']
-            
-            last_err = ""
-            for m in safe_models:
-                try:
-                    model = genai.GenerativeModel(m)
-                    # Note : En mode secours, on envoie le prompt directement SANS l'instruction système séparée
-                    # pour éviter les erreurs de format sur certains modèles.
-                    # On inclut l'instruction dans le texte global.
-                    combined_prompt = system_instruction + "\n\n" + full_prompt
-                    response = model.generate_content(combined_prompt)
-                    return response.text, f"🚲 {m}"
-                except Exception as e:
-                    last_err = e
-                    continue # On essaie le suivant
-            
-            return f"Erreur Vélo : Impossible de joindre Google ({last_err})", "❌ Panne"
 
     except Exception as e:
         return f"Erreur technique : {e}", "❌ Erreur"
@@ -198,10 +181,10 @@ def create_word_docx(text_content, title="Document IA"):
 with st.sidebar:
     st.header("🎒 Cartable")
     
-    st.markdown("### 🎛️ Mode de Pilotage")
+    st.markdown("### 🎛️ Choix de l'IA")
     mode_choisi = st.radio(
-        "Qui conduit ?",
-        ["🤖 Auto (Smart)", "🚲 Éco (Flash)", "🏎️ Expert (Llama/Pro)"],
+        "Niveau d'intelligence :",
+        ["🤖 Auto (Recommandé)", "⚡ Flash (Simple/Illimité)", "🧠 Pro (Moyen/Limité)", "🦙 Groq (Raisonnement)"],
         index=0
     )
     st.divider()
@@ -217,7 +200,7 @@ with st.sidebar:
     st.divider()
     if 'context' in st.session_state: st.info("Mémoire active")
 
-st.subheader(f"🎓 Tuteur Finance - Mode : {mode_choisi.split(' ')[1]}")
+st.subheader(f"🎓 Tuteur Finance")
 tab1, tab2, tab3 = st.tabs(["💬 Chat", "📝 Synthèses", "🧠 Quiz"])
 
 with tab1:
@@ -227,9 +210,9 @@ with tab1:
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
                 used_model = msg.get("model_label", "IA")
-                if "Vélo" in used_model: badge_class = "badge-velo"
-                elif "Ferrari" in used_model: badge_class = "badge-ferrari"
-                else: badge_class = "badge-tracteur"
+                if "Flash" in used_model: badge_class = "badge-flash"
+                elif "Groq" in used_model: badge_class = "badge-groq"
+                else: badge_class = "badge-pro"
                 st.markdown(f'<span class="badge {badge_class}">{used_model}</span>', unsafe_allow_html=True)
                 docx = create_word_docx(msg["content"], title=f"Réponse {i}")
                 st.download_button("💾 Word", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
@@ -239,15 +222,15 @@ with tab1:
         with st.chat_message("user"): st.markdown(user)
         ctx = st.session_state.get('context', '')
         with st.chat_message("assistant"):
-            with st.spinner(f"Pilotage ({mode_choisi})..."):
+            with st.spinner(f"Réflexion..."):
                 resp, model_label = ask_smart_ai(user, mode_choisi, context=ctx)
                 
                 st.markdown(resp)
                 st.session_state.messages.append({"role": "assistant", "content": resp, "model_label": model_label})
                 
-                if "Vélo" in model_label: badge_class = "badge-velo"
-                elif "Ferrari" in model_label: badge_class = "badge-ferrari"
-                else: badge_class = "badge-tracteur"
+                if "Flash" in model_label: badge_class = "badge-flash"
+                elif "Groq" in model_label: badge_class = "badge-groq"
+                else: badge_class = "badge-pro"
                 st.markdown(f'<span class="badge {badge_class}">{model_label}</span>', unsafe_allow_html=True)
                 
                 docx = create_word_docx(resp, title="Réponse Instantanée")
