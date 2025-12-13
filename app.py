@@ -59,27 +59,25 @@ def get_file_content(uploaded_file):
 
 def ask_gemini(prompt):
     try:
-        # On demande du LaTeX strict pour pouvoir le détecter et le transformer en image
+        # On demande à l'IA d'être stricte sur le LaTeX
         system_instruction = (
             "Tu es un expert Finance. "
-            "RÈGLE OBLIGATOIRE : Pour toute formule mathématique, utilise le format LaTeX encadré par des DOLLARS DOUBLES ($$). "
-            "Ne mets jamais de formule dans le texte courant, isole-les toujours sur une nouvelle ligne avec $$."
-            "Exemple : \n$$ \sigma = \sqrt{variance} $$\n"
+            "RÈGLE 1 : Pour les GRANDES formules complexes, utilise $$ ... $$. "
+            "RÈGLE 2 : Pour les symboles dans le texte (comme sigma, xi), utilise le LaTeX simple ($...$). "
+            "Sois précis."
         )
         response = model.generate_content(system_instruction + "\n\n" + prompt)
         return response.text
     except Exception as e: return f"Erreur IA : {e}"
 
 def latex_to_image(latex_str):
-    """Transforme une formule LaTeX en image PNG transparente"""
+    """Transforme une grosse formule en image"""
     try:
-        # Configuration d'une petite figure matplotlib
-        fig, ax = plt.subplots(figsize=(6, 1)) # Taille rectangle
-        # On dessine la formule
-        ax.text(0.5, 0.5, f"${latex_str}$", size=18, ha='center', va='center')
-        ax.axis('off') # On cache les axes
-        
-        # Sauvegarde en mémoire
+        fig, ax = plt.subplots(figsize=(6, 1.5)) # Un peu plus haut pour les sommes
+        # On nettoie un peu le LaTeX pour matplotlib
+        clean_latex = latex_str.replace(r'\ ', ' ') 
+        ax.text(0.5, 0.5, f"${clean_latex}$", size=20, ha='center', va='center')
+        ax.axis('off')
         buf = io.BytesIO()
         plt.savefig(buf, format='png', bbox_inches='tight', dpi=300, transparent=True)
         plt.close(fig)
@@ -88,31 +86,61 @@ def latex_to_image(latex_str):
     except:
         return None
 
+def clean_text_for_word(text):
+    """Traduit le 'petit' LaTeX du texte en caractères Word lisibles"""
+    # 1. On enlève les dollars simples qui polluent la lecture
+    text = text.replace('$', '')
+    
+    # 2. Dictionnaire de traduction (LaTeX -> Caractère Word)
+    replacements = {
+        r'\sigma': 'σ',
+        r'\Sigma': 'Σ',
+        r'\mu': 'μ',
+        r'\beta': 'β',
+        r'\alpha': 'α',
+        r'\gamma': 'γ',
+        r'\lambda': 'λ',
+        r'\sum': '∑',
+        r'\approx': '≈',
+        r'\times': '×',
+        r'\le': '≤',
+        r'\ge': '≥',
+        r'\infty': '∞',
+        # Les indices et exposants financiers courants
+        r'_i': 'ᵢ',
+        r'_t': 'ₜ',
+        r'_0': '₀',
+        r'^2': '²',
+        r'\%': '%'
+    }
+    
+    for latex_code, unicode_char in replacements.items():
+        text = text.replace(latex_code, unicode_char)
+        
+    return text
+
 def create_word_docx(text_content, title="Document IA"):
-    """Génère un Word en remplaçant les $$...$$ par des images"""
     doc = Document()
     doc.add_heading(title, 0)
     
-    # On découpe le texte par blocs de formules $$
-    # Le regex capture ce qui est entre $$
+    # On découpe le texte : on sépare les grosses formules ($$) du reste
     parts = re.split(r'(\$\$.*?\$\$)', text_content, flags=re.DOTALL)
     
     for part in parts:
         if part.startswith('$$') and part.endswith('$$'):
-            # C'est une formule ! On nettoie les $$
+            # C'est une GROSSE formule -> On fait une image
             latex_code = part.replace('$$', '').strip()
             image_buffer = latex_to_image(latex_code)
             
             if image_buffer:
-                # On ajoute l'image centrée
-                doc.add_picture(image_buffer, width=Inches(2))
+                doc.add_picture(image_buffer, width=Inches(2.5))
             else:
-                # Si l'image plante, on met le code en secours
-                doc.add_paragraph(part)
+                doc.add_paragraph(part) # Secours
         else:
-            # C'est du texte normal
-            if part.strip(): # On évite les lignes vides inutiles
-                doc.add_paragraph(part.strip())
+            # C'est du texte ou des petites formules -> On nettoie
+            if part.strip():
+                clean_text = clean_text_for_word(part)
+                doc.add_paragraph(clean_text)
                 
     bio = io.BytesIO()
     doc.save(bio)
@@ -143,9 +171,8 @@ with tab1:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
-                # Bouton de téléchargement avec conversion d'images
                 docx = create_word_docx(msg["content"], title=f"Réponse {i}")
-                st.download_button("💾 Word (Avec Images)", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
+                st.download_button("💾 Word (Propre)", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
 
     if user := st.chat_input("Question (ex: Formule Écart-Type)..."):
         st.session_state.messages.append({"role": "user", "content": user})
@@ -159,7 +186,7 @@ with tab1:
                 st.session_state.messages.append({"role": "assistant", "content": resp})
                 
                 docx = create_word_docx(resp, title="Réponse Instantanée")
-                st.download_button("💾 Télécharger (Format Image)", docx.getvalue(), "reponse.docx", key="new")
+                st.download_button("💾 Télécharger (Word Propre)", docx.getvalue(), "reponse.docx", key="new")
 
 with tab2:
     if st.button("Générer Synthèse"):
