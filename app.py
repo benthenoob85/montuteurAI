@@ -135,15 +135,35 @@ with tab_outils:
     st.subheader("Outils d'étude")
     col1, col2 = st.columns(2)
     
-    with col1:
+   with col2:
         with st.container(border=True):
-            st.write("### 📄 Synthèse de cours")
-            if st.button("Générer le résumé"):
+            st.write("### 📇 Flashcards")
+            st.caption("Cliquez sur une question pour voir la réponse.")
+            
+            if st.button("Générer 5 cartes"):
                 if 'context' in st.session_state:
-                    with st.spinner("Rédaction..."):
-                        prompt_resume = f"Fais une synthèse structurée (Introduction, Points clés, Conclusion) de ce texte : {st.session_state['context']}"
-                        resume = ask_gemini(prompt_resume)
-                        st.markdown(resume)
+                    with st.spinner("Création des cartes cache-cache..."):
+                        # On demande un format strict à l'IA pour pouvoir séparer Q et R
+                        prompt_flash = (
+                            f"Extrait 5 concepts clés de ce cours : {st.session_state['context']}. "
+                            "Format impératif : sur chaque ligne, écris 'QUESTION ; RÉPONSE' "
+                            "(utilise un point-virgule pour séparer). Pas de gras, pas de liste à puces, juste le texte."
+                        )
+                        cards_text = ask_gemini(prompt_flash)
+                        
+                        # On découpe le texte reçu pour créer les menus déroulants
+                        for line in cards_text.split('\n'):
+                            if ";" in line:
+                                try:
+                                    parts = line.split(";", 1) # On coupe au premier point-virgule
+                                    question = parts[0].strip()
+                                    reponse = parts[1].strip()
+                                    
+                                    # C'est ici que la magie opère : st.expander cache le contenu
+                                    with st.expander(f"❓ {question}"):
+                                        st.write(f"💡 {reponse}")
+                                except:
+                                    continue # Si une ligne bug, on l'ignore
                 else:
                     st.error("Chargez un document d'abord.")
 
