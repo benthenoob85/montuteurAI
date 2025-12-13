@@ -13,7 +13,7 @@ import re
 import time
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur Hybride (Google + Groq)", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur Finance Stable", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -32,13 +32,12 @@ valid_google_models = []
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        # Détection automatique des modèles disponibles pour éviter les 404
+        # On essaie de lister les modèles, sinon on met des valeurs par défaut
         try:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
                     valid_google_models.append(m.name)
         except:
-            # Fallback si l'API ne répond pas à la liste
             valid_google_models = ["models/gemini-flash-latest", "models/gemini-pro"]
 except: pass
 
@@ -56,8 +55,10 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # Vision : On utilise un modèle Google Flash (Groq ne voit pas)
-            vision_model_name = 'gemini-flash-latest' 
+            # Vision : Google Flash Latest
+            vision_model_name = 'gemini-flash-latest'
+            
+            # On essaie de trouver un modèle Flash valide dans la liste détectée
             for m in valid_google_models:
                 if 'flash' in m and 'lite' not in m:
                     vision_model_name = m
@@ -107,35 +108,37 @@ def get_optimized_google_list(strategy):
     return [x for x in prioritized_list if not (x in seen or seen.add(x))]
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
+    # --- 1. DÉFINITION DES VARIABLES (CORRECTION BUG NAMEERROR) ---
+    # Elles sont définies ici, tout en haut, pour être accessibles partout.
     has_ctx = len(context) > 10
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
-
-    # --- 1. DÉTERMINATION DE LA STRATÉGIE ---
-    # On définit les déclencheurs AVANT tout (Correction du bug NameError)
+    
     technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio", "math", "formule"]
     reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction", "explique"]
-    
-    strategy = "flash" # Par défaut
+    prompt_lower = prompt.lower()
+
+    # --- 2. DÉTERMINATION DE LA STRATÉGIE ---
+    strategy = "flash" # Valeur par défaut
     
     # Choix Manuel
     if "Groq" in mode_manuel: strategy = "groq"
     elif "Pro" in mode_manuel: strategy = "pro"
     elif "Flash" in mode_manuel: strategy = "flash"
     
-    # Choix Automatique (Le cerveau)
+    # Choix Automatique
     elif "Auto" in mode_manuel:
-        prompt_lower = prompt.lower()
+        # On utilise les variables définies plus haut -> Plus de crash
         if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
-            strategy = "groq" # Groq pour le raisonnement
+            strategy = "groq"
         elif has_context or any(t in prompt_lower for t in technical_triggers):
-            strategy = "pro"  # Google Pro pour les maths/fichiers
+            strategy = "pro"
         else:
-            strategy = "flash" # Google Flash pour le reste
+            strategy = "flash"
 
-    # --- 2. EXÉCUTION DE LA STRATÉGIE ---
+    # --- 3. EXÉCUTION ---
 
-    # CAS A : GROQ (Llama 3)
+    # CAS A : GROQ
     if strategy == "groq" and groq_client:
         try:
             chat = groq_client.chat.completions.create(
@@ -144,13 +147,11 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             )
             return chat.choices[0].message.content, "🦙 Groq (Llama 3)"
         except Exception as e:
-            # Si Groq plante, on bascule silencieusement sur Google Pro
-            strategy = "pro" 
+            strategy = "pro" # Repli sur Google Pro
 
-    # CAS B : GOOGLE (Cascade Dynamique)
-    # On récupère la liste des modèles Google qui marchent VRAIMENT chez vous
+    # CAS B : GOOGLE (Cascade)
     model_cascade = get_optimized_google_list(strategy)
-    model_cascade.append('gemini-flash-latest') # Sécurité finale
+    model_cascade.append('gemini-flash-latest') # Filet de sécurité
 
     last_error = ""
     for model_name in model_cascade:
@@ -159,7 +160,6 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             combined_prompt = system_instruction + "\n\n" + full_prompt
             response = model.generate_content(combined_prompt)
             
-            # Label joli
             if "pro" in model_name: label = f"🧠 Google {model_name}"
             elif "flash" in model_name: label = f"⚡ Google {model_name}"
             else: label = f"🤖 {model_name}"
@@ -167,7 +167,7 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             return response.text, label
         except Exception as e:
             last_error = e
-            continue # Au suivant !
+            continue
 
     return f"Panne totale. (Erreur: {last_error})", "❌ Erreur"
 
@@ -218,8 +218,7 @@ with st.sidebar:
     mode_choisi = st.radio(
         "Qui répond ?",
         ["🤖 Auto (Recommandé)", "⚡ Flash (Rapide)", "🧠 Pro (Expert)", "🦙 Groq (Raisonnement)"],
-        index=0,
-        help="Auto: Groq pour le texte complexe, Google pour les maths/images."
+        index=0
     )
     
     with st.expander("🔍 État des Moteurs"):
