@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Contrôlé", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur IA Stable", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -49,6 +49,7 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
+            # Vision : On utilise le modèle Flash standard qui est multimodal
             vision_model = genai.GenerativeModel('gemini-1.5-flash')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
@@ -70,11 +71,9 @@ def get_file_content(uploaded_file):
     return text
 
 def select_best_ai(prompt, mode_manuel, has_context=False):
-    """
-    LE CHEF DE GARE : Obéit au mode manuel OU décide intelligemment.
-    """
+    """Sélecteur de modèle (Smart Router)"""
     
-    # 1. SI L'UTILISATEUR FORCE UN MODE
+    # 1. MODE MANUEL FORCÉ
     if mode_manuel == "🚲 Éco (Flash)":
         return "gemini-flash", "🚲 Gemini Flash (Forcé)"
     
@@ -83,7 +82,7 @@ def select_best_ai(prompt, mode_manuel, has_context=False):
         if groq_client: return "groq", "🏎️ Llama 3 (Ferrari Forcée)"
         return "gemini-pro", "🚜 Gemini Pro (Expert Forcé)"
 
-    # 2. SINON : MODE AUTO (SMART ROUTING)
+    # 2. MODE AUTO
     prompt_lower = prompt.lower()
     complex_triggers = [
         "calcul", "analyse", "synthèse", "résous", "équation", "bilan", 
@@ -92,11 +91,9 @@ def select_best_ai(prompt, mode_manuel, has_context=False):
     ]
     
     needs_ferrari = False
-    
-    # Critères pour sortir la Ferrari
-    if has_context: needs_ferrari = True # Si on a des docs, on analyse à fond
+    if has_context: needs_ferrari = True
     elif any(t in prompt_lower for t in complex_triggers): needs_ferrari = True
-    elif len(prompt.split()) > 15: needs_ferrari = True # Phrase longue = question complexe
+    elif len(prompt.split()) > 15: needs_ferrari = True
         
     if needs_ferrari:
         if claude_client: return "claude", "🧠 Claude 3.5 (Luxe Auto)"
@@ -107,11 +104,9 @@ def select_best_ai(prompt, mode_manuel, has_context=False):
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
-    
-    # Appel du sélecteur avec votre choix manuel
     model_type, label = select_best_ai(prompt, mode_manuel, has_context=has_ctx)
-    
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
+    
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX complexes."
 
     try:
@@ -131,25 +126,36 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             )
             return chat_completion.choices[0].message.content, label
 
-        # --- CAS 3 : GEMINI PRO ---
+        # --- CAS 3 : GEMINI PRO (Tracteur/Expert) ---
         elif model_type == "gemini-pro":
+            # On force le modèle Pro 1.5 stable
             model = genai.GenerativeModel('gemini-1.5-pro')
             response = model.generate_content(system_instruction + "\n\n" + full_prompt)
             return response.text, label
 
-        # --- CAS 4 : LE VÉLO (Multi-Secours) ---
+        # --- CAS 4 : LE VÉLO (CORRECTION ICI) ---
         else:
-            safe_models = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+            # Liste des noms EXACTS valides en Décembre 2025
+            # On enlève 'gemini-pro' qui causait l'erreur 404
+            safe_models = [
+                'gemini-1.5-flash',       # Le standard actuel
+                'gemini-1.5-flash-latest',# La dernière version
+                'gemini-1.5-flash-001',   # La version stable spécifique
+                'gemini-1.0-pro'          # L'ancien Pro (nom exact)
+            ]
+            
             last_err = ""
             for m in safe_models:
                 try:
                     model = genai.GenerativeModel(m)
                     response = model.generate_content(system_instruction + "\n\n" + full_prompt)
-                    return response.text, f"🚲 {m} (Vélo)"
+                    return response.text, f"🚲 {m}" # Succès !
                 except Exception as e:
                     last_err = e
-                    continue
-            return f"Erreur Vélo : {last_err}", "❌ Panne"
+                    continue # On essaie le suivant
+            
+            # Si tout échoue vraiment
+            return f"Erreur Vélo : Impossible de joindre Google ({last_err})", "❌ Panne"
 
     except Exception as e:
         return f"Erreur technique : {e}", "❌ Erreur"
@@ -197,13 +203,11 @@ def create_word_docx(text_content, title="Document IA"):
 with st.sidebar:
     st.header("🎒 Cartable")
     
-    # --- NOUVEAU : SÉLECTEUR DE MODE ---
     st.markdown("### 🎛️ Mode de Pilotage")
     mode_choisi = st.radio(
         "Qui conduit ?",
         ["🤖 Auto (Smart)", "🚲 Éco (Flash)", "🏎️ Expert (Llama/Pro)"],
-        index=0,
-        help="Auto : L'IA choisit. Éco : Gratuit illimité. Expert : Puissance maximale."
+        index=0
     )
     st.divider()
     
@@ -241,7 +245,6 @@ with tab1:
         ctx = st.session_state.get('context', '')
         with st.chat_message("assistant"):
             with st.spinner(f"Pilotage ({mode_choisi})..."):
-                # On passe le mode manuel à la fonction
                 resp, model_label = ask_smart_ai(user, mode_choisi, context=ctx)
                 
                 st.markdown(resp)
@@ -255,13 +258,10 @@ with tab1:
                 docx = create_word_docx(resp, title="Réponse Instantanée")
                 st.download_button("💾 Télécharger", docx.getvalue(), "reponse.docx", key="new")
 
-# Pour les outils lourds (Synthèse/Quiz), on force souvent l'Expert ou on respecte le choix manuel
 with tab2:
     if st.button("Générer Synthèse"):
         if 'context' in st.session_state:
             with st.spinner("Rédaction..."):
-                # Ici on peut laisser le Smart AI décider (souvent Expert car il y a du contexte)
-                # Mais on respecte si l'utilisateur a forcé le mode ÉCO
                 resp, label = ask_smart_ai(f"Synthèse structurée.", mode_choisi, context=st.session_state['context'])
                 st.markdown(resp)
                 st.markdown(f"**{label}**")
