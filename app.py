@@ -13,33 +13,30 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Smart-Routing", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur IA Contrôlé", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
     .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px; margin-bottom: 10px;}
     .stDownloadButton > button {height: 30px; padding: 0px;}
     .badge {padding: 3px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white;}
-    .badge-velo {background-color: #28a745;} /* Vert */
-    .badge-ferrari {background-color: #dc3545;} /* Rouge */
-    .badge-tracteur {background-color: #007bff;} /* Bleu */
+    .badge-velo {background-color: #28a745;}
+    .badge-ferrari {background-color: #dc3545;}
+    .badge-tracteur {background-color: #007bff;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. CONNEXION AUX ÉCURIES D'IA ---
-# Google
+# --- 2. CONNEXION AUX IA ---
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
 except: pass
 
-# Groq (La Ferrari Gratuite)
 groq_client = None
 if "GROQ_API_KEY" in st.secrets:
     try: groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     except: pass
 
-# Anthropic (Optionnel)
 claude_client = None
 if "ANTHROPIC_API_KEY" in st.secrets:
     try: claude_client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
@@ -50,7 +47,6 @@ def get_file_content(uploaded_file):
     text = ""
     file_type = uploaded_file.name.split('.')[-1].lower()
     try:
-        # Pour la vision (images), Gemini est le seul roi gratuit
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
             vision_model = genai.GenerativeModel('gemini-1.5-flash')
@@ -73,70 +69,52 @@ def get_file_content(uploaded_file):
         st.error(f"Erreur lecture {uploaded_file.name}: {e}")
     return text
 
-def select_best_ai(prompt, has_context=False):
+def select_best_ai(prompt, mode_manuel, has_context=False):
     """
-    LE CHEF DE GARE : Choisit le véhicule selon la mission.
+    LE CHEF DE GARE : Obéit au mode manuel OU décide intelligemment.
     """
-    prompt_lower = prompt.lower()
     
-    # Mots-clés qui nécessitent la FERRARI (Raisonnement/Maths)
+    # 1. SI L'UTILISATEUR FORCE UN MODE
+    if mode_manuel == "🚲 Éco (Flash)":
+        return "gemini-flash", "🚲 Gemini Flash (Forcé)"
+    
+    if mode_manuel == "🏎️ Expert (Llama/Pro)":
+        if claude_client: return "claude", "🧠 Claude 3.5 (Luxe Forcé)"
+        if groq_client: return "groq", "🏎️ Llama 3 (Ferrari Forcée)"
+        return "gemini-pro", "🚜 Gemini Pro (Expert Forcé)"
+
+    # 2. SINON : MODE AUTO (SMART ROUTING)
+    prompt_lower = prompt.lower()
     complex_triggers = [
         "calcul", "analyse", "synthèse", "résous", "équation", "bilan", 
         "ratio", "expliquer", "détaille", "pourquoi", "comparer", "latex", 
-        "formule", "démonstration", "excel", "tableau"
+        "formule", "démonstration", "excel", "tableau", "c'est quoi", "définition"
     ]
     
-    # 1. ANALYSE DE LA COMPLEXITÉ
     needs_ferrari = False
     
-    # Si on a des documents chargés, on privilégie toujours l'intelligence
-    if has_context: 
-        needs_ferrari = True
-    # Si la question contient des mots complexes
-    elif any(trigger in prompt_lower for trigger in complex_triggers):
-        needs_ferrari = True
-    # Si la question est longue (> 15 mots), c'est souvent complexe
-    elif len(prompt.split()) > 15:
-        needs_ferrari = True
+    # Critères pour sortir la Ferrari
+    if has_context: needs_ferrari = True # Si on a des docs, on analyse à fond
+    elif any(t in prompt_lower for t in complex_triggers): needs_ferrari = True
+    elif len(prompt.split()) > 15: needs_ferrari = True # Phrase longue = question complexe
         
-    # 2. SÉLECTION DU MODÈLE
-    
-    # SCÉNARIO A : Besoin de puissance (Ferrari)
     if needs_ferrari:
-        # Priorité 1 : Claude (Si payé - Le Top du Top)
-        if claude_client:
-            return "claude", "🧠 Claude 3.5 (Luxe)"
-            
-        # Priorité 2 : Llama 3 via Groq (Gratuit & Intelligent)
-        if groq_client:
-            return "groq", "🏎️ Llama 3 (Ferrari)"
-            
-        # Priorité 3 : Gemini Pro (Solide)
-        return "gemini-pro", "🚜 Gemini Pro (Tracteur)"
-
-    # SCÉNARIO B : Pas besoin de puissance (Vélo)
+        if claude_client: return "claude", "🧠 Claude 3.5 (Luxe Auto)"
+        if groq_client: return "groq", "🏎️ Llama 3 (Ferrari Auto)"
+        return "gemini-pro", "🚜 Gemini Pro (Tracteur Auto)"
     else:
-        # Gemini Flash est parfait pour le chat rapide
-        return "gemini-flash", "🚲 Gemini Flash (Vélo)"
+        return "gemini-flash", "🚲 Gemini Flash (Vélo Auto)"
 
-
-def ask_smart_ai(prompt, context=""):
-    """Exécute la demande avec le modèle choisi par le Chef de Gare"""
-    
-    # 1. On appelle le Chef de Gare
+def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
-    model_type, label = select_best_ai(prompt, has_context=has_ctx)
+    
+    # Appel du sélecteur avec votre choix manuel
+    model_type, label = select_best_ai(prompt, mode_manuel, has_context=has_ctx)
     
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
-    
-    system_instruction = (
-        "Tu es un expert pédagogique Finance. "
-        "RÈGLE : Utilise $$ ... $$ pour les formules complexes (LaTeX) et $...$ pour les symboles."
-    )
+    system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX complexes."
 
     try:
-        # EXÉCUTION SELON LE CHOIX
-        
         # --- CAS 1 : CLAUDE ---
         if model_type == "claude":
             msg = claude_client.messages.create(
@@ -145,15 +123,11 @@ def ask_smart_ai(prompt, context=""):
             )
             return msg.content[0].text, label
 
-        # --- CAS 2 : GROQ (LLAMA 3) ---
+        # --- CAS 2 : GROQ ---
         elif model_type == "groq":
             chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": full_prompt}
-                ],
-                model="llama-3.3-70b-versatile", # Le modèle le plus intelligent de Groq
-                temperature=0,
+                messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}],
+                model="llama-3.3-70b-versatile", temperature=0,
             )
             return chat_completion.choices[0].message.content, label
 
@@ -163,22 +137,24 @@ def ask_smart_ai(prompt, context=""):
             response = model.generate_content(system_instruction + "\n\n" + full_prompt)
             return response.text, label
 
-        # --- CAS 4 : GEMINI FLASH (Défaut) ---
+        # --- CAS 4 : LE VÉLO (Multi-Secours) ---
         else:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(system_instruction + "\n\n" + full_prompt)
-            return response.text, label
+            safe_models = ['gemini-1.5-flash', 'gemini-1.5-flash-latest', 'gemini-1.0-pro', 'gemini-pro']
+            last_err = ""
+            for m in safe_models:
+                try:
+                    model = genai.GenerativeModel(m)
+                    response = model.generate_content(system_instruction + "\n\n" + full_prompt)
+                    return response.text, f"🚲 {m} (Vélo)"
+                except Exception as e:
+                    last_err = e
+                    continue
+            return f"Erreur Vélo : {last_err}", "❌ Panne"
 
     except Exception as e:
-        # EN CAS DE PANNE : On sort le vieux vélo de secours (Gemini Flash)
-        try:
-            fallback = genai.GenerativeModel('gemini-1.5-flash')
-            resp = fallback.generate_content(full_prompt)
-            return resp.text, "🚲 Gemini Flash (Secours)"
-        except:
-            return f"Erreur technique : {e}", "❌ Panne"
+        return f"Erreur technique : {e}", "❌ Erreur"
 
-# --- FONCTIONS DESSIN & WORD (Inchangées et Indispensables) ---
+# --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
     try:
         fig, ax = plt.subplots(figsize=(6, 1.5))
@@ -220,6 +196,17 @@ def create_word_docx(text_content, title="Document IA"):
 # --- 4. INTERFACE ---
 with st.sidebar:
     st.header("🎒 Cartable")
+    
+    # --- NOUVEAU : SÉLECTEUR DE MODE ---
+    st.markdown("### 🎛️ Mode de Pilotage")
+    mode_choisi = st.radio(
+        "Qui conduit ?",
+        ["🤖 Auto (Smart)", "🚲 Éco (Flash)", "🏎️ Expert (Llama/Pro)"],
+        index=0,
+        help="Auto : L'IA choisit. Éco : Gratuit illimité. Expert : Puissance maximale."
+    )
+    st.divider()
+    
     uploaded_files = st.file_uploader("Fichiers", accept_multiple_files=True)
     if uploaded_files:
         if st.button("🔄 Analyser"):
@@ -231,7 +218,7 @@ with st.sidebar:
     st.divider()
     if 'context' in st.session_state: st.info("Mémoire active")
 
-st.subheader("🎓 Tuteur Optimisé (Smart Routing)")
+st.subheader(f"🎓 Tuteur Finance - Mode : {mode_choisi.split(' ')[1]}")
 tab1, tab2, tab3 = st.tabs(["💬 Chat", "📝 Synthèses", "🧠 Quiz"])
 
 with tab1:
@@ -241,13 +228,10 @@ with tab1:
             st.markdown(msg["content"])
             if msg["role"] == "assistant":
                 used_model = msg.get("model_label", "IA")
-                # Affichage visuel du modèle utilisé (Badge)
                 if "Vélo" in used_model: badge_class = "badge-velo"
                 elif "Ferrari" in used_model: badge_class = "badge-ferrari"
                 else: badge_class = "badge-tracteur"
-                
                 st.markdown(f'<span class="badge {badge_class}">{used_model}</span>', unsafe_allow_html=True)
-                
                 docx = create_word_docx(msg["content"], title=f"Réponse {i}")
                 st.download_button("💾 Word", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
 
@@ -256,13 +240,13 @@ with tab1:
         with st.chat_message("user"): st.markdown(user)
         ctx = st.session_state.get('context', '')
         with st.chat_message("assistant"):
-            with st.spinner("Le Chef de Gare choisit le véhicule..."):
-                resp, model_label = ask_smart_ai(user, context=ctx)
+            with st.spinner(f"Pilotage ({mode_choisi})..."):
+                # On passe le mode manuel à la fonction
+                resp, model_label = ask_smart_ai(user, mode_choisi, context=ctx)
                 
                 st.markdown(resp)
                 st.session_state.messages.append({"role": "assistant", "content": resp, "model_label": model_label})
                 
-                # Badge visuel
                 if "Vélo" in model_label: badge_class = "badge-velo"
                 elif "Ferrari" in model_label: badge_class = "badge-ferrari"
                 else: badge_class = "badge-tracteur"
@@ -271,24 +255,26 @@ with tab1:
                 docx = create_word_docx(resp, title="Réponse Instantanée")
                 st.download_button("💾 Télécharger", docx.getvalue(), "reponse.docx", key="new")
 
-# Les autres onglets utilisent aussi le Smart AI (par défaut Ferrari car c'est de l'analyse)
+# Pour les outils lourds (Synthèse/Quiz), on force souvent l'Expert ou on respecte le choix manuel
 with tab2:
     if st.button("Générer Synthèse"):
         if 'context' in st.session_state:
             with st.spinner("Rédaction..."):
-                resp, label = ask_smart_ai(f"Synthèse structurée de ce cours.", context=st.session_state['context'])
+                # Ici on peut laisser le Smart AI décider (souvent Expert car il y a du contexte)
+                # Mais on respecte si l'utilisateur a forcé le mode ÉCO
+                resp, label = ask_smart_ai(f"Synthèse structurée.", mode_choisi, context=st.session_state['context'])
                 st.markdown(resp)
-                st.markdown(f"**Généré par : {label}**")
-                docx = create_word_docx(resp, title="Synthèse Complète")
+                st.markdown(f"**{label}**")
+                docx = create_word_docx(resp, title="Synthèse")
                 st.download_button("📥 Télécharger", docx.getvalue(), "synthese.docx")
         else: st.error("Pas de documents.")
 
 with tab3:
     if st.button("Lancer Quiz"):
         if 'context' in st.session_state:
-            resp, label = ask_smart_ai(f"3 QCM difficiles.", context=st.session_state['context'])
+            resp, label = ask_smart_ai(f"3 QCM.", mode_choisi, context=st.session_state['context'])
             st.markdown(resp)
-            st.markdown(f"**Généré par : {label}**")
+            st.markdown(f"**{label}**")
             docx = create_word_docx(resp, title="Quiz")
             st.download_button("📥 Télécharger", docx.getvalue(), "quiz.docx")
         else: st.error("Pas de documents.")
