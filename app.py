@@ -11,9 +11,10 @@ from PIL import Image
 import io
 import matplotlib.pyplot as plt
 import re
+import time
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur IA Compatible 2.0", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur Finance Stable", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -50,8 +51,8 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # CORRECTION ICI : On utilise le 2.0 Flash car le 1.5 n'existe pas chez vous
-            vision_model = genai.GenerativeModel('gemini-2.0-flash')
+            # On utilise l'alias générique "latest" pour la vision aussi
+            vision_model = genai.GenerativeModel('gemini-flash-latest')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
         elif file_type == 'pdf':
@@ -75,27 +76,21 @@ def select_initial_strategy(prompt, mode_manuel, has_context=False):
     """
     DÉCIDE PAR QUI ON COMMENCE.
     """
-    # 1. SI L'UTILISATEUR FORCE UN MODE
     if "Flash" in mode_manuel: return "flash"
     if "Pro" in mode_manuel: return "pro"
     if "Groq" in mode_manuel: return "groq"
 
-    # 2. MODE AUTO
+    # MODE AUTO
     prompt_lower = prompt.lower()
-    
-    # Raisonnement -> Groq
     reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction"]
     if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
         return "groq"
 
-    # Technique -> Gemini Pro (Le plus fort)
     technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
     if has_context or any(t in prompt_lower for t in technical_triggers):
         return "pro"
 
-    # Sinon -> Gemini Flash
     return "flash"
-
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
     has_ctx = len(context) > 10
@@ -115,36 +110,44 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
         except:
             pass # On bascule sur Google si Groq plante
 
-    # --- STRATÉGIE GOOGLE CASCADE (CORRIGÉE POUR VOS MODÈLES) ---
+    # --- STRATÉGIE GOOGLE CASCADE ---
+    
+    # Construction de la liste des modèles à essayer dans l'ordre
+    cascade_list = []
     
     if strategy == "pro":
-        # On tente le 2.5 Pro (limité à 20), puis on tombe sur le 2.0 Flash (illimité)
-        cascade_list = ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-2.0-flash-lite']
+        # On tente le Pro Latest (Générique) -> Puis le Flash Latest
+        cascade_list = ['gemini-pro-latest', 'gemini-flash-latest']
     else:
-        # On commence direct par le 2.0 Flash
-        cascade_list = ['gemini-2.0-flash', 'gemini-2.0-flash-lite']
+        # On tente le Flash Latest (Générique)
+        cascade_list = ['gemini-flash-latest']
+
+    # On ajoute toujours une sécurité à la fin de la liste avec des versions 1.5 explicites
+    # au cas où les alias "latest" pointeraient vers des versions 2.0 limitées
+    cascade_list.append('gemini-1.5-flash') 
 
     last_error = ""
     
     for model_name in cascade_list:
         try:
             model = genai.GenerativeModel(model_name)
+            # On colle l'instruction système dans le prompt pour robustesse maximale
             combined_prompt = system_instruction + "\n\n" + full_prompt
             response = model.generate_content(combined_prompt)
             
-            # Label propre pour l'affichage
-            if "2.5-pro" in model_name: label = "🧠 Gemini 2.5 Pro (Expert)"
-            elif "2.0-flash" in model_name: label = "⚡ Gemini 2.0 Flash (Rapide)"
-            elif "lite" in model_name: label = "🛡️ Gemini Lite (Secours)"
+            # Label propre
+            if "pro" in model_name: label = "🧠 Gemini Pro (Expert)"
+            elif "flash" in model_name: label = "⚡ Gemini Flash (Rapide)"
             else: label = f"🤖 {model_name}"
             
             return response.text, label
 
         except Exception as e:
             last_error = e
-            continue # On passe au suivant
+            # IMPORTANT : Si c'est une erreur de quota (429), on continue la boucle !
+            continue
             
-    return f"Panne totale. Vérifiez votre clé ou attendez un peu. (Erreur: {last_error})", "❌ Erreur"
+    return f"Toutes les IA dorment. Dernière erreur : {last_error}", "❌ Erreur Totale"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
