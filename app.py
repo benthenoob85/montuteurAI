@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import re
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur Finance Ultra-Moderne", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur Finance Optimisé", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
@@ -49,7 +49,7 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # On utilise votre modèle Flash 2.0 pour la vision (rapide et dispo)
+            # On utilise le 2.0 Flash qui est solide pour les images
             vision_model = genai.GenerativeModel('gemini-2.0-flash')
             response = vision_model.generate_content(["Transcris tout le texte :", image])
             text += f"\n--- Image ---\n{response.text}"
@@ -71,11 +71,11 @@ def get_file_content(uploaded_file):
     return text
 
 def select_best_ai(prompt, mode_manuel, has_context=False):
-    """LOGIQUE DE SÉLECTION (Adaptée à vos modèles)"""
+    """LOGIQUE DE SÉLECTION"""
     
     # 1. MODE MANUEL
-    if "Flash" in mode_manuel: return "flash", "⚡ Gemini 2.0 Flash (Base)"
-    if "Pro" in mode_manuel: return "pro", "🧠 Gemini 2.5 Pro (Expert)"
+    if "Flash" in mode_manuel: return "flash", "⚡ Gemini Flash (Base)"
+    if "Pro" in mode_manuel: return "pro", "🧠 Gemini Pro (Expert)"
     if "Groq" in mode_manuel:
         if groq_client: return "groq", "🦙 Groq Llama 3 (Raisonnement)"
         else: return "pro", "⚠️ Pas de clé Groq -> Gemini Pro"
@@ -91,10 +91,10 @@ def select_best_ai(prompt, mode_manuel, has_context=False):
     # NIVEAU 2 : TECHNIQUE (Gemini Pro)
     technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio"]
     if has_context or any(t in prompt_lower for t in technical_triggers):
-        return "pro", "🧠 Gemini 2.5 Pro (Auto)"
+        return "pro", "🧠 Gemini Pro (Auto)"
 
     # NIVEAU 1 : SIMPLE (Flash)
-    return "flash", "⚡ Gemini 2.0 Flash (Auto)"
+    return "flash", "⚡ Gemini Flash (Auto)"
 
 
 def ask_smart_ai(prompt, mode_manuel, context=""):
@@ -113,18 +113,17 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
             )
             return chat_completion.choices[0].message.content, label
 
-        # --- NIVEAU 2 : GEMINI PRO (Votre modèle 2.5 Pro) ---
+        # --- NIVEAU 2 : GEMINI PRO ---
         elif model_type == "pro":
             try:
-                # On utilise votre modèle Pro exact
+                # On tente le 2.5 Pro (le meilleur). S'il plante (quota 20), on bascule sur Flash
                 model = genai.GenerativeModel('gemini-2.5-pro')
                 response = model.generate_content(system_instruction + "\n\n" + full_prompt)
                 return response.text, label
             except:
-                # Si quota dépassé, repli sur Flash 2.0
                 return ask_google_flash(full_prompt, system_instruction, "⚡ Flash (Secours Pro)")
 
-        # --- NIVEAU 1 : GEMINI FLASH (Votre modèle 2.0 Flash) ---
+        # --- NIVEAU 1 : GEMINI FLASH ---
         else:
             return ask_google_flash(full_prompt, system_instruction, label)
 
@@ -132,25 +131,31 @@ def ask_smart_ai(prompt, mode_manuel, context=""):
         return f"Erreur technique : {e}", "❌ Erreur"
 
 def ask_google_flash(prompt, sys_instruct, label):
-    """Fonction de secours qui essaie VOS modèles Flash disponibles"""
+    """
+    Fonction de secours ROBUSTE.
+    On évite absolument les versions '2.5' qui sont limitées à 20 requêtes.
+    On priorise '2.0-flash' et '1.5-flash' qui sont les vrais modèles illimités.
+    """
     models_to_try = [
-        'gemini-2.0-flash',       # Votre modèle standard rapide
-        'gemini-2.5-flash',       # Votre modèle très récent (peut-être limité)
-        'gemini-flash-latest'     # Pointeur générique
+        'gemini-2.0-flash',       # Excellent, rapide, quota large
+        'gemini-1.5-flash',       # Le standard inépuisable
+        'gemini-2.0-flash-lite',  # Version légère très rapide
+        'gemini-flash-latest'     # Générique
     ]
     
     last_error = ""
     for model_name in models_to_try:
         try:
             model = genai.GenerativeModel(model_name)
-            # On combine le prompt pour plus de robustesse
-            response = model.generate_content(sys_instruct + "\n\n" + prompt)
-            return response.text, label
+            # On colle l'instruction système dans le prompt pour éviter les erreurs de format
+            combined_prompt = sys_instruct + "\n\n" + prompt
+            response = model.generate_content(combined_prompt)
+            return response.text, label # On garde le label d'origine (ex: "Flash Auto")
         except Exception as e:
             last_error = e
             continue
             
-    return f"Aucun modèle Flash ne répond (Erreur: {last_error})", "❌ Panne Totale"
+    return f"Tous les modèles Flash sont KO (Dernière erreur: {last_error})", "❌ Panne Totale"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
