@@ -10,3 +10,7 @@ python-docx
 Pillow
 matplotlib
 fpdf
+langchain
+angchain-google-genai
+langchain-community
+faiss-cpu
