@@ -12,24 +12,24 @@ import re
 import tempfile
 import os
 
-# --- LIBRAIRIES RAG (IA Documentaire) ---
+# --- LIBRAIRIES RAG (IA Documentaire) - Utilisation de ChromaDB pour la stabilité ---
 try:
     from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     from langchain_google_genai import GoogleGenerativeAIEmbeddings
-    from langchain.chains import RetrievalQA
+    # CHANGEMENT MAJEUR : Import de ChromaDB au lieu de FAISS
+    from langchain_community.vectorstores import Chroma
     from langchain.chains import RetrievalQA
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_core.prompts import PromptTemplate
     from langchain.memory import ConversationBufferWindowMemory
 except ImportError as e:
-    st.error(f"Erreur d'importation critique : {e}")
+    st.error(f"Erreur d'importation critique. Vérifiez requirements.txt: {e}")
     st.stop()
-from langchain.memory import ConversationBufferWindowMemory
-# --- 1. CONFIGURATION INITIALE ---
-st.set_page_config(page_title="Tuteur Financier RAG", layout="wide", page_icon="🎓")
 
-# Styles pour les badges et l'interface
+
+# --- 1. CONFIGURATION INITIALE & STYLES ---
+st.set_page_config(page_title="Tuteur Financier RAG", layout="wide", page_icon="🎓")
 st.markdown("""
 <style>
     .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px; margin-bottom: 10px;}
@@ -37,7 +37,6 @@ st.markdown("""
     .badge-flash {background-color: #28a745;}
     .badge-pro {background-color: #007bff;}
     .badge-groq {background-color: #dc3545;}
-    /* Ajustement des boutons pour l'export */
     .stDownloadButton > button {height: auto; padding: 5px; font-size: 0.8em; width: 100%;}
     .stButton button {width: 100%;}
 </style>
@@ -47,7 +46,6 @@ st.markdown("""
 valid_google_models = []
 groq_client = None
 
-# Connexion Google (avec détection des modèles)
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
@@ -59,28 +57,26 @@ try:
             valid_google_models = ["models/gemini-flash-latest", "models/gemini-pro"]
 except: pass
 
-# Connexion Groq
 if "GROQ_API_KEY" in st.secrets:
     try: groq_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
     except: pass
 
 # --- 3. GESTION DU RAG ET DES SESSIONS ---
 if 'chat_sessions' not in st.session_state:
-    st.session_state['chat_sessions'] = {} # Archive des conversations
+    st.session_state['chat_sessions'] = {}
 if 'current_session_id' not in st.session_state:
     st.session_state['current_session_id'] = "Session 1"
 if 'vector_store' not in st.session_state:
-    st.session_state['vector_store'] = None # Base de vecteurs pour le RAG
+    st.session_state['vector_store'] = None
 if 'context_text' not in st.session_state:
-    st.session_state['context_text'] = "" # Texte brut des documents
+    st.session_state['context_text'] = ""
 if 'memory' not in st.session_state:
-    # Mémoire glissante de 5 échanges (limitée en tokens)
     st.session_state['memory'] = ConversationBufferWindowMemory(k=5, memory_key="chat_history", return_messages=True)
 
 # --- CACHING DES EMBEDDINGS (Performance) ---
 @st.cache_resource(show_spinner=False)
 def get_vector_store(uploaded_file_names, context_text):
-    """Crée le vector store RAG et le met en cache"""
+    """Crée le vector store RAG et le met en cache avec ChromaDB"""
     if not context_text: return None
 
     # 1. Découpage du texte (Chunking)
@@ -95,20 +91,30 @@ def get_vector_store(uploaded_file_names, context_text):
     st.toast("Création des embeddings avec Google...", icon="🧠")
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", client=genai)
     
-    # 3. Création du Vector Store (FAISS est léger et rapide)
-    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
-    return vector_store
+    # 3. Création du Vector Store (ChromaDB est léger et fiable)
+    # On utilise un emplacement temporaire pour stocker l'index
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Note: ChromaDB a besoin d'une liste de documents, pas seulement de textes
+        from langchain.docstore.document import Document
+        docs = [Document(page_content=t) for t in chunks]
+        
+        vector_store = Chroma.from_documents(
+            docs, 
+            embedding=embeddings, 
+            persist_directory=temp_dir
+        )
+        # On ne peut pas facilement 'persister' et recharger dans Streamlit Cloud
+        # Donc on retourne l'objet Chroma en mémoire
+        return vector_store 
+
 
 # --- ARCHIVAGE DES SESSIONS ---
 def start_new_session():
-    """Archive la session actuelle et en commence une nouvelle"""
     current_messages = st.session_state.get('messages', [])
     if current_messages:
-        # Stocker la session actuelle dans l'archive
         session_name = st.session_state['current_session_id']
         st.session_state['chat_sessions'][session_name] = current_messages
     
-    # Réinitialisation
     session_id = f"Session {len(st.session_state['chat_sessions']) + 1}"
     st.session_state['current_session_id'] = session_id
     st.session_state['messages'] = []
@@ -116,14 +122,17 @@ def start_new_session():
     st.toast(f"Nouvelle session '{session_id}' démarrée!", icon="💬")
 
 def load_session(session_id):
-    """Charge une session archivée"""
     st.session_state['current_session_id'] = session_id
     st.session_state['messages'] = st.session_state['chat_sessions'][session_id]
-    st.session_state['memory'].clear() # On vide la mémoire de travail
+    st.session_state['memory'].clear()
     st.toast(f"Session '{session_id}' chargée!", icon="📂")
 
 # --- LECTURE ET PRÉ-TRAITEMENT DES FICHIERS ---
 def load_and_process_files(uploaded_files):
+    # DÉCLENCHE UN RE-RUN (et donc le cache)
+    st.session_state['context_text'] = ""
+    st.session_state['vector_store'] = None
+    
     raw_text = ""
     for uploaded_file in uploaded_files:
         file_type = uploaded_file.name.split('.')[-1].lower()
@@ -137,8 +146,6 @@ def load_and_process_files(uploaded_files):
                 loader = PyPDFLoader(tmp_file_path)
             elif file_type == 'docx':
                 loader = Docx2txtLoader(tmp_file_path)
-            elif file_type in ['txt']:
-                loader = TextLoader(tmp_file_path)
             elif file_type in ['xlsx', 'xls']:
                 xls = pd.ExcelFile(tmp_file_path)
                 excel_text = ""
@@ -169,6 +176,7 @@ def load_and_process_files(uploaded_files):
                  
     if raw_text:
         st.session_state['context_text'] = raw_text
+        # Déclenchement du cache
         st.session_state['vector_store'] = get_vector_store(
             [f.name for f in uploaded_files], 
             raw_text
@@ -177,9 +185,7 @@ def load_and_process_files(uploaded_files):
 
 # --- 4. FONCTION PRINCIPALE D'INTERROGATION (CASCADE RAG) ---
 def get_google_model_name(type="flash"):
-    """Trouve le meilleur nom de modèle valide"""
     clean_models = [m.replace('models/', '') for m in valid_google_models]
-    
     if type == "pro":
         candidates = [m for m in clean_models if 'pro' in m and '2.5' in m]
         if not candidates: candidates = [m for m in clean_models if 'pro' in m and 'latest' in m]
@@ -198,23 +204,20 @@ def ask_groq(prompt, system_instruction):
     return chat.choices[0].message.content
 
 def ask_smart_ai(prompt):
-    """Gère la cascade AI et le RAG"""
     system_instruction = (
         "Tu es un expert pédagogique Finance. Règle stricte pour la compatibilité PDF/Word: "
         "Toutes les variables, symboles, lettres grecques (alpha, sigma, etc.) ou expressions mathématiques "
         "DOIVENT être entourées de $$...$$ sur une ligne séparée (même les symboles simples) pour garantir le bon export. "
-        "Exemple: 'La volatilité $$ \\sigma $$ est calculée par...' devient 'La volatilité $$ \\sigma $$ est calculée...'"
+        "Exemple: 'La volatilité $$ \\sigma $$ est calculée par la formule $$ V = r \\times \\sqrt{T} $$.'"
     )
     full_prompt = prompt
 
     # --- ÉTAPE RAG ---
     if st.session_state['vector_store']:
         retriever = st.session_state['vector_store'].as_retriever()
-        docs = retriever.get_relevant_documents(prompt)
-        context = "\n\n--- CONTEXTE RÉCUPÉRÉ ---\n" + "\n".join([doc.page_content for doc in docs])
-        full_prompt = f"Question : {prompt}\n\nContexte : {context}"
         is_complex = True
     else:
+        retriever = None
         complexity_keywords = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio", "formule", "développe", "argumente", "comparer", "pourquoi"]
         is_complex = any(k in prompt.lower() for k in complexity_keywords) or (len(prompt.split()) > 15)
 
@@ -235,12 +238,19 @@ def ask_smart_ai(prompt):
     for model_name, label in cascade:
         try:
             if "llama" in model_name:
-                resp = ask_groq(full_prompt, system_instruction)
+                # Si Groq est utilisé, on doit récupérer le contexte manuellement car Langchain n'est pas utilisé
+                if retriever:
+                    docs = retriever.get_relevant_documents(prompt)
+                    context = "\n\n--- CONTEXTE RÉCUPÉRÉ ---\n" + "\n".join([doc.page_content for doc in docs])
+                    prompt_for_groq = f"Question : {prompt}\n\nContexte : {context}"
+                else:
+                    prompt_for_groq = prompt
+                resp = ask_groq(prompt_for_groq, system_instruction)
             else:
                 llm = ChatGoogleGenerativeAI(model=model_name, temperature=0, client=genai)
                 conversation = RetrievalQA.from_chain_type(
                     llm=llm,
-                    retriever=retriever if st.session_state['vector_store'] else None,
+                    retriever=retriever,
                     memory=st.session_state['memory'],
                     chain_type="stuff",
                     verbose=False,
@@ -317,7 +327,6 @@ def create_pdf(text_content, title="Document IA"):
                 except: pass
         else:
             clean_txt = clean_text_for_word(part)
-            # Encodage latin-1 pour FPDF (gère les accents français basiques)
             clean_txt = clean_txt.encode('latin-1', 'replace').decode('latin-1')
             if clean_txt.strip():
                 pdf.multi_cell(0, 7, txt=clean_txt)
@@ -330,12 +339,12 @@ with st.sidebar:
     st.button("🆕 Nouvelle Conversation", on_click=start_new_session, use_container_width=True)
     
     st.markdown("### 💾 Fichiers & RAG")
-    uploaded_files = st.file_uploader("Documents", accept_multiple_files=True)
+    uploaded_files = st.file_uploader("Documents (PDF, DOCX, Excel, Images)", accept_multiple_files=True)
     if uploaded_files and st.button("🔄 Charger & Indexer"):
         with st.spinner("Indexation des documents..."):
             load_and_process_files(uploaded_files)
 
-    if st.session_state['vector_store']: st.success("✅ RAG ACTIF")
+    if st.session_state['vector_store']: st.success("✅ RAG ACTIF (ChromaDB)")
     else: st.warning("⚠️ RAG INACTIF")
 
     st.markdown("### 📂 Historique")
