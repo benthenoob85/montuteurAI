@@ -17,7 +17,7 @@ import os
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
 # Nouvelle adresse pour le découpeur de texte :
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain.chains.retrieval_qa.base import RetrievalQA
 from langchain_community.vectorstores import FAISS
 # RetrievalQA est toujours là, mais nécessite que 'langchain' soit bien installé
 from langchain.chains import RetrievalQA
