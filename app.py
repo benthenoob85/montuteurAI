@@ -13,31 +13,31 @@ import re
 import time
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Tuteur Finance Stable", layout="wide", page_icon="🎓")
+st.set_page_config(page_title="Tuteur Intelligent", layout="wide", page_icon="🎓")
 
 st.markdown("""
 <style>
     .stChatMessage {background-color: #f0f2f6; border-radius: 10px; padding: 10px; margin-bottom: 10px;}
     .badge {padding: 3px 8px; border-radius: 4px; font-size: 0.8em; font-weight: bold; color: white;}
-    .badge-google {background-color: #28a745;} /* Vert */
+    .badge-flash {background-color: #28a745;} /* Vert */
+    .badge-pro {background-color: #007bff;}   /* Bleu */
     .badge-groq {background-color: #dc3545;}  /* Rouge */
-    .badge-backup {background-color: #ffc107; color: black;} /* Jaune */
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. CONNEXION ET DÉTECTION DES MODÈLES ---
+# --- 2. CONNEXION AUX IA ---
 valid_google_models = []
 
-# Connexion Google
+# Connexion Google (On liste ce qui est dispo pour éviter les 404)
 try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-        # On essaie de lister les modèles, sinon on met des valeurs par défaut
         try:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
                     valid_google_models.append(m.name)
         except:
+            # Liste de secours si l'API ne répond pas au listing
             valid_google_models = ["models/gemini-flash-latest", "models/gemini-pro"]
 except: pass
 
@@ -55,10 +55,8 @@ def get_file_content(uploaded_file):
     try:
         if file_type in ['png', 'jpg', 'jpeg']:
             image = Image.open(uploaded_file)
-            # Vision : Google Flash Latest
+            # Pour la vision, on utilise un modèle Flash stable
             vision_model_name = 'gemini-flash-latest'
-            
-            # On essaie de trouver un modèle Flash valide dans la liste détectée
             for m in valid_google_models:
                 if 'flash' in m and 'lite' not in m:
                     vision_model_name = m
@@ -84,92 +82,88 @@ def get_file_content(uploaded_file):
         st.error(f"Erreur lecture {uploaded_file.name}: {e}")
     return text
 
-def get_optimized_google_list(strategy):
-    """Crée une liste de modèles Google valides selon la stratégie"""
+def get_google_model_name(type="flash"):
+    """Trouve le meilleur nom de modèle valide sur votre compte"""
     clean_models = [m.replace('models/', '') for m in valid_google_models]
-    prioritized_list = []
     
-    if strategy == "pro":
-        # Priorité : Pro 2.5 -> Pro Latest -> Pro standard
-        prioritized_list += [m for m in clean_models if 'pro' in m and '2.5' in m]
-        prioritized_list += [m for m in clean_models if 'pro' in m and 'latest' in m]
-        prioritized_list += [m for m in clean_models if 'pro' in m]
-        # Fallback : Flash 2.0
-        prioritized_list += [m for m in clean_models if 'flash' in m and '2.0' in m]
-        
-    else: # Flash
-        # Priorité : Flash Latest -> Flash 2.0 -> Flash standard
-        prioritized_list += [m for m in clean_models if 'flash' in m and 'latest' in m]
-        prioritized_list += [m for m in clean_models if 'flash' in m and '2.0' in m]
-        prioritized_list += [m for m in clean_models if 'flash' in m]
+    if type == "pro":
+        # On cherche le meilleur PRO disponible
+        candidates = [m for m in clean_models if 'pro' in m and '2.5' in m] # Le top
+        if not candidates: candidates = [m for m in clean_models if 'pro' in m and 'latest' in m]
+        if not candidates: candidates = [m for m in clean_models if 'pro' in m]
+        return candidates[0] if candidates else 'gemini-pro'
     
-    # Dédoublonnage
-    seen = set()
-    return [x for x in prioritized_list if not (x in seen or seen.add(x))]
+    else: # flash
+        # On cherche le meilleur FLASH disponible
+        candidates = [m for m in clean_models if 'flash' in m and 'latest' in m]
+        if not candidates: candidates = [m for m in clean_models if 'flash' in m]
+        return candidates[0] if candidates else 'gemini-flash-latest'
 
-def ask_smart_ai(prompt, mode_manuel, context=""):
-    # --- 1. DÉFINITION DES VARIABLES (CORRECTION BUG NAMEERROR) ---
-    # Elles sont définies ici, tout en haut, pour être accessibles partout.
+def ask_groq(prompt, system_instruction):
+    """Fonction dédiée pour interroger Groq"""
+    if not groq_client: raise Exception("Pas de clé Groq")
+    chat = groq_client.chat.completions.create(
+        messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": prompt}],
+        model="llama-3.3-70b-versatile", temperature=0
+    )
+    return chat.choices[0].message.content
+
+def ask_smart_ai(prompt, context=""):
+    # --- 1. PRÉPARATION ---
     has_ctx = len(context) > 10
     full_prompt = f"Contexte : {context}\n\nQuestion : {prompt}" if has_ctx else prompt
     system_instruction = "Tu es un expert pédagogique Finance. Utilise $$...$$ pour les formules LaTeX (ex: $$ E=mc^2 $$)."
-    
-    technical_triggers = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio", "math", "formule"]
-    reasoning_triggers = ["pourquoi", "comment", "avis", "comparer", "nuance", "démonstration", "argumente", "rédaction", "explique"]
-    prompt_lower = prompt.lower()
 
-    # --- 2. DÉTERMINATION DE LA STRATÉGIE ---
-    strategy = "flash" # Valeur par défaut
+    # --- 2. DÉTECTION DE LA COMPLEXITÉ ---
+    # Critères de complexité : Contexte présent OU mots-clés spécifiques OU phrase longue
+    complexity_keywords = ["analyse", "synthèse", "résous", "calcul", "tableau", "excel", "bilan", "ratio", "formule", "développe", "argumente", "comparer", "pourquoi"]
     
-    # Choix Manuel
-    if "Groq" in mode_manuel: strategy = "groq"
-    elif "Pro" in mode_manuel: strategy = "pro"
-    elif "Flash" in mode_manuel: strategy = "flash"
-    
-    # Choix Automatique
-    elif "Auto" in mode_manuel:
-        # On utilise les variables définies plus haut -> Plus de crash
-        if any(t in prompt_lower for t in reasoning_triggers) and groq_client:
-            strategy = "groq"
-        elif has_context or any(t in prompt_lower for t in technical_triggers):
-            strategy = "pro"
-        else:
-            strategy = "flash"
+    is_complex = False
+    if has_ctx: is_complex = True
+    elif any(k in prompt.lower() for k in complexity_keywords): is_complex = True
+    elif len(prompt.split()) > 15: is_complex = True # Phrase longue = souvent complexe
 
-    # --- 3. EXÉCUTION ---
+    # --- 3. CASCADE DÉCISIONNELLE ---
 
-    # CAS A : GROQ
-    if strategy == "groq" and groq_client:
+    # CAS A : TÂCHE SIMPLE -> ON RESTE SUR FLASH
+    if not is_complex:
         try:
-            chat = groq_client.chat.completions.create(
-                messages=[{"role": "system", "content": system_instruction}, {"role": "user", "content": full_prompt}],
-                model="llama-3.3-70b-versatile", temperature=0
-            )
-            return chat.choices[0].message.content, "🦙 Groq (Llama 3)"
-        except Exception as e:
-            strategy = "pro" # Repli sur Google Pro
-
-    # CAS B : GOOGLE (Cascade)
-    model_cascade = get_optimized_google_list(strategy)
-    model_cascade.append('gemini-flash-latest') # Filet de sécurité
-
-    last_error = ""
-    for model_name in model_cascade:
-        try:
+            model_name = get_google_model_name("flash")
             model = genai.GenerativeModel(model_name)
-            combined_prompt = system_instruction + "\n\n" + full_prompt
-            response = model.generate_content(combined_prompt)
-            
-            if "pro" in model_name: label = f"🧠 Google {model_name}"
-            elif "flash" in model_name: label = f"⚡ Google {model_name}"
-            else: label = f"🤖 {model_name}"
-            
-            return response.text, label
+            response = model.generate_content(system_instruction + "\n\n" + full_prompt)
+            return response.text, f"⚡ Gemini Flash ({model_name})"
         except Exception as e:
-            last_error = e
-            continue
+            # Si même Flash plante, on tente Groq en dernier recours
+            try:
+                return ask_groq(full_prompt, system_instruction), "🦙 Groq (Secours Flash)"
+            except:
+                return f"Erreur Flash & Groq: {e}", "❌ Panne"
 
-    return f"Panne totale. (Erreur: {last_error})", "❌ Erreur"
+    # CAS B : TÂCHE COMPLEXE -> ESCALADE
+    else:
+        # ÉTAPE 1 : On tente le PRO (Google)
+        try:
+            model_name = get_google_model_name("pro")
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(system_instruction + "\n\n" + full_prompt)
+            return response.text, f"🧠 Gemini Pro ({model_name})"
+        
+        except Exception as google_error:
+            # ÉTAPE 2 : Si Pro échoue (Quota/Erreur), on bascule sur GROQ
+            # C'est ici que se fait la bascule automatique demandée
+            try:
+                resp = ask_groq(full_prompt, system_instruction)
+                return resp, "🦙 Groq (Relais Pro)"
+            
+            except Exception as groq_error:
+                # ÉTAPE 3 : Si Groq échoue aussi, on revient sur FLASH (le moins pire)
+                try:
+                    model_name = get_google_model_name("flash")
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(system_instruction + "\n\n" + full_prompt)
+                    return response.text, "⚡ Gemini Flash (Secours Ultime)"
+                except:
+                    return f"Échec total (Pro, Groq et Flash HS).", "❌ Panne Totale"
 
 # --- FONCTIONS DESSIN & WORD ---
 def latex_to_image(latex_str):
@@ -212,20 +206,12 @@ def create_word_docx(text_content, title="Document IA"):
 
 # --- 4. INTERFACE ---
 with st.sidebar:
-    st.header("🎒 Cartable Hybride")
+    st.header("🎒 Cartable")
     
-    st.markdown("### 🎛️ Pilote IA")
-    mode_choisi = st.radio(
-        "Qui répond ?",
-        ["🤖 Auto (Recommandé)", "⚡ Flash (Rapide)", "🧠 Pro (Expert)", "🦙 Groq (Raisonnement)"],
-        index=0
-    )
+    # Indicateurs discrets
+    if groq_client: st.success("✅ Groq Connecté")
+    else: st.warning("⚠️ Groq Absent (Ajoutez la clé)")
     
-    with st.expander("🔍 État des Moteurs"):
-        if groq_client: st.success("✅ Groq Connecté")
-        else: st.warning("⚠️ Groq Absent")
-        st.info(f"✅ {len(valid_google_models)} modèles Google détectés")
-
     st.divider()
     uploaded_files = st.file_uploader("Fichiers", accept_multiple_files=True)
     if uploaded_files:
@@ -238,7 +224,7 @@ with st.sidebar:
     st.divider()
     if 'context' in st.session_state: st.info("Mémoire active")
 
-st.subheader(f"🎓 Tuteur Finance")
+st.subheader(f"🎓 Tuteur Automatique")
 tab1, tab2, tab3 = st.tabs(["💬 Chat", "📝 Synthèses", "🧠 Quiz"])
 
 with tab1:
@@ -249,8 +235,8 @@ with tab1:
             if msg["role"] == "assistant":
                 used_model = msg.get("model_label", "IA")
                 if "Groq" in used_model: badge = "badge-groq"
-                elif "Google" in used_model: badge = "badge-google"
-                else: badge = "badge-backup"
+                elif "Pro" in used_model: badge = "badge-pro"
+                else: badge = "badge-flash"
                 st.markdown(f'<span class="badge {badge}">{used_model}</span>', unsafe_allow_html=True)
                 docx = create_word_docx(msg["content"], title=f"Réponse {i}")
                 st.download_button("💾 Word", docx.getvalue(), f"note_{i}.docx", key=f"d{i}")
@@ -260,15 +246,17 @@ with tab1:
         with st.chat_message("user"): st.markdown(user)
         ctx = st.session_state.get('context', '')
         with st.chat_message("assistant"):
-            with st.spinner(f"Réflexion..."):
-                resp, model_label = ask_smart_ai(user, mode_choisi, context=ctx)
+            # Plus de sélecteur manuel, c'est l'IA qui décide
+            with st.spinner(f"Analyse et choix de l'expert..."):
+                # On ne passe plus de "mode_manuel", tout est auto
+                resp, model_label = ask_smart_ai(user, context=ctx)
                 
                 st.markdown(resp)
                 st.session_state.messages.append({"role": "assistant", "content": resp, "model_label": model_label})
                 
                 if "Groq" in model_label: badge = "badge-groq"
-                elif "Google" in model_label: badge = "badge-google"
-                else: badge = "badge-backup"
+                elif "Pro" in model_label: badge = "badge-pro"
+                else: badge = "badge-flash"
                 st.markdown(f'<span class="badge {badge}">{model_label}</span>', unsafe_allow_html=True)
                 
                 docx = create_word_docx(resp, title="Réponse Instantanée")
@@ -278,7 +266,8 @@ with tab2:
     if st.button("Générer Synthèse"):
         if 'context' in st.session_state:
             with st.spinner("Rédaction..."):
-                resp, label = ask_smart_ai(f"Synthèse structurée.", mode_choisi, context=st.session_state['context'])
+                # Synthèse = Complexe -> Va déclencher Pro ou Groq
+                resp, label = ask_smart_ai(f"Synthèse structurée.", context=st.session_state['context'])
                 st.markdown(resp)
                 docx = create_word_docx(resp, title="Synthèse")
                 st.download_button("📥 Télécharger", docx.getvalue(), "synthese.docx")
@@ -287,7 +276,8 @@ with tab2:
 with tab3:
     if st.button("Lancer Quiz"):
         if 'context' in st.session_state:
-            resp, label = ask_smart_ai(f"3 QCM.", mode_choisi, context=st.session_state['context'])
+            # QCM = Complexe -> Va déclencher Pro ou Groq
+            resp, label = ask_smart_ai(f"3 QCM.", context=st.session_state['context'])
             st.markdown(resp)
             docx = create_word_docx(resp, title="Quiz")
             st.download_button("📥 Télécharger", docx.getvalue(), "quiz.docx")
