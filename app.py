@@ -13,16 +13,18 @@ import tempfile
 import os
 
 # --- LIBRAIRIES RAG (IA Documentaire) ---
-# --- LIBRAIRIES RAG (IA Documentaire) - CORRIGÉ ---
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
-# Nouvelle adresse pour le découpeur de texte :
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.chains.retrieval_qa.base import RetrievalQA
-from langchain_community.vectorstores import FAISS
-# RetrievalQA est toujours là, mais nécessite que 'langchain' soit bien installé
-from langchain.chains import RetrievalQA
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import PromptTemplate
+try:
+    from langchain_community.document_loaders import PyPDFLoader, TextLoader, Docx2txtLoader
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+    from langchain_google_genai import GoogleGenerativeAIEmbeddings
+    from langchain_community.vectorstores import FAISS
+    from langchain.chains import RetrievalQA
+    from langchain_google_genai import ChatGoogleGenerativeAI
+    from langchain_core.prompts import PromptTemplate
+    from langchain.memory import ConversationBufferWindowMemory
+except ImportError as e:
+    st.error(f"Erreur d'importation critique : {e}")
+    st.stop()
 from langchain.memory import ConversationBufferWindowMemory
 # --- 1. CONFIGURATION INITIALE ---
 st.set_page_config(page_title="Tuteur Financier RAG", layout="wide", page_icon="🎓")
